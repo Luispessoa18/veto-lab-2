@@ -1,0 +1,18 @@
+{
+  "llm_url": "http://127.0.0.1:8080/v1/chat/completions",
+  "prompt_guard_url": "http://127.0.0.1:8090/scan",
+  "blacklist_path": "config/blacklist.json",
+  "anvil_rpc_url": "http://127.0.0.1:8545",
+  "anvil_timeout_seconds": 30,
+  "solana_rpc_url": "http://127.0.0.1:8899",
+  "solana_timeout_seconds": 30,
+  "seed": 42,
+  "synthetic_count": 240,
+  "max_historical": 80,
+  "max_output_tokens": 450,
+  "llm_timeout_seconds": 150,
+  "benchmark_workers": 2,
+  "rpc_by_chain": {
+    "ethereum": "", "bsc": "", "arbitrum": "", "polygon": "", "optimism": "", "base": "", "avalanche": "", "fantom": "", "gnosis": ""
+  }
+}

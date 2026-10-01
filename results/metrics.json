@@ -1,0 +1,5 @@
+{
+  "status": "STALE",
+  "reason": "cases regenerated; rerun benchmark",
+  "dataset_version": "synthetic-v4-prompt-guard"
+}

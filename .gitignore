@@ -1,0 +1,20 @@
+# Arquivos/pastas ocultos (.venv, .venv-lora, .cache, etc.)
+.*
+!.gitignore
+
+# Modelos grandes: baixe com BAIXAR_MODELOS.bat / baixar_modelos.sh
+*.gguf
+!models/VETO-Security-LoRA-F16.gguf
+models/Llama-Prompt-Guard-2-86M/
+models/VETO-Security-Gemma3-4B-LoRA/
+*.safetensors
+
+# Binarios e ferramentas de terceiros
+llama/
+tools/
+external/
+
+# Python / temporarios
+__pycache__/
+*.pyc
+results/tmp*/

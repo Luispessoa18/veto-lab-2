@@ -1,0 +1,1 @@
+Coloque o modelo VETO-Security-Q5_K_M.gguf (exportado no Google Colab) nesta pasta.
