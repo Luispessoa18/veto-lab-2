@@ -4,15 +4,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 LLAMA="${LLAMA_SERVER:-$(command -v llama-server || echo llama/llama-server)}"
-MODEL=models/gemma-3-4b-it-Q4_K_M.gguf
-LORA=models/VETO-Security-LoRA-F16.gguf
+MODEL="${VETO_MODEL:-models/veto_lfm2_5_350m_aave_f16.gguf}"
+LORA="${VETO_LORA:-}"
 PY=.venv/bin/python
-NGL="${NGL:-99}"   # use NGL=0 para rodar so na CPU
+NGL="${VETO_NGL:-0}"
 mkdir -p results
 
 [ -x "$LLAMA" ] || { echo "[ERRO] llama-server nao encontrado (defina LLAMA_SERVER=/caminho/llama-server)"; exit 1; }
 [ -f "$MODEL" ] || { echo "[ERRO] Faltando $MODEL. Rode ./baixar_modelos.sh"; exit 1; }
-[ -f "$LORA" ]  || { echo "[ERRO] Faltando $LORA"; exit 1; }
+[ -z "$LORA" ] || [ -f "$LORA" ] || { echo "[ERRO] Faltando $LORA"; exit 1; }
 [ -x "$PY" ]    || { echo "[ERRO] Faltando .venv. Veja o README (instalacao Linux)"; exit 1; }
 [ -f models/Llama-Prompt-Guard-2-86M/model.safetensors ] || { echo "[ERRO] Prompt Guard ausente. Rode HF_TOKEN=... ./baixar_modelos.sh"; exit 1; }
 ANVIL="$(command -v anvil || echo "$HOME/.foundry/bin/anvil")"
@@ -22,7 +22,9 @@ pids=()
 trap 'echo; echo Encerrando...; kill "${pids[@]}" 2>/dev/null || true' EXIT INT TERM
 
 echo "Iniciando llama.cpp na porta 18080 (log: results/llama.log)..."
-"$LLAMA" -m "$MODEL" --lora "$LORA" --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl "$NGL" --jinja > results/llama.log 2>&1 &
+LORA_ARGS=()
+[ -z "$LORA" ] || LORA_ARGS=(--lora "$LORA")
+"$LLAMA" -m "$MODEL" "${LORA_ARGS[@]}" --host 127.0.0.1 --port 18080 -c 4096 -np 2 -ngl "$NGL" --jinja > results/llama.log 2>&1 &
 pids+=($!)
 
 echo "Iniciando Anvil na porta 8545 (log: results/anvil.log)..."

@@ -1,13 +1,17 @@
-# VETO LAB — benchmark de carteira com Gemma 3 + LoRA VETO Security
+# VETO LAB — benchmark de segurança para carteiras
 
-API local que verifica transações (EVM/Solana) e prompts de agentes em camadas: blacklist → Prompt Guard → IA (Gemma 3 4B + LoRA VETO) → simulação no Anvil. Detalhes da metodologia e limitações em [LEIA-ME.md](LEIA-ME.md).
+API local que verifica transações (EVM/Solana) e prompts de agentes em camadas: blacklist → Prompt Guard → IA (VETO LFM2.5 350M) → simulação. Detalhes da metodologia e limitações em [LEIA-ME.md](LEIA-ME.md).
+
+Para interpretar corretamente as métricas e planejar avaliações independentes,
+consulte [AVALIACAO_E_TESTES.md](AVALIACAO_E_TESTES.md).
 
 ## O que está (e o que não está) no repositório
 
 | Item | No git? | Como obter |
 |---|---|---|
 | Código (`src/`, `tests/`, `config/`, `.bat`, `.sh`) | ✅ | — |
-| LoRA `models/VETO-Security-LoRA-F16.gguf` (~60 MB) | ✅ | — |
+| VETO LFM2.5 350M com LoRA embutido | ❌ | coloque em `models/veto_lfm2_5_350m_aave_f16.gguf` |
+| Gemma 3 4B + LoRA externo | opcional/fallback | — |
 | Gemma 3 4B IT `Q4_K_M` (~2.5 GB) | ❌ | `BAIXAR_MODELOS.bat` / `./baixar_modelos.sh` |
 | Prompt Guard 2 86M (Meta, ~1.1 GB, acesso restrito) | ❌ | mesmo script, com `HF_TOKEN` |
 | llama.cpp (`llama/`) | ❌ | [releases do llama.cpp](https://github.com/ggml-org/llama.cpp/releases) |
@@ -83,15 +87,25 @@ curl -L https://foundry.paradigm.xyz | bash
 
 ### 7. Subir tudo
 ```bash
-./iniciar_tudo.sh          # GPU
-NGL=0 ./iniciar_tudo.sh    # somente CPU
+./iniciar_tudo.sh                 # CPU por padrão
+VETO_NGL=99 ./iniciar_tudo.sh     # offload para GPU
 ```
 Sobe llama.cpp (18080), Anvil opcional (8545) e API + Prompt Guard (8070). Logs em `results/*.log`. Swagger: <http://127.0.0.1:8070/docs>. `CTRL+C` encerra tudo.
 
+O LFM já contém o ajuste VETO e não recebe `--lora`. Para voltar temporariamente
+ao Gemma com adaptador externo no Windows:
+
+```bat
+set "VETO_MODEL=models\gemma-3-4b-it-Q4_K_M.gguf"
+set "VETO_LORA=models\VETO-Security-LoRA-F16.gguf"
+set "VETO_NGL=99"
+00_INICIAR_TUDO.bat
+```
+
 Para subir cada serviço manualmente:
 ```bash
-$LLAMA_SERVER -m models/gemma-3-4b-it-Q4_K_M.gguf --lora models/VETO-Security-LoRA-F16.gguf \
-  --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl 99 --jinja
+$LLAMA_SERVER -m models/veto_lfm2_5_350m_aave_f16.gguf \
+  --host 127.0.0.1 --port 18080 -c 4096 -np 2 -ngl 0 --jinja
 anvil --host 127.0.0.1 --port 8545
 .venv/bin/python -m src.unified_api --host 127.0.0.1 --port 8070
 # Prompt Guard standalone (usado pelo benchmark):
@@ -109,6 +123,19 @@ anvil --host 127.0.0.1 --port 8545
 | `08_API_UNICA.bat` | `.venv/bin/python -m src.unified_api --port 8070` |
 | `09_SIMULAR_ATAQUES_SOLANA.bat` | `.venv/bin/python -m src.solana_attack_simulator --api http://127.0.0.1:8070` |
 | testes | `.venv/bin/python -m unittest discover -s tests` |
+
+## Avaliação adversarial
+
+`03_GERAR_CASOS.bat` cria 600 casos-base e aproximadamente 20% de equivalentes
+metamórficos. Cada execução usa uma seed aleatória registrada em
+`results/solana_cases.jsonl`, distribui casos entre `development` e `holdout` e
+embaralha tipos, valores, limites e textos. `09_SIMULAR_ATAQUES_SOLANA.bat` executa
+exatamente o arquivo preparado, evitando gerar outro conjunto durante a medição.
+
+O relatório separa acurácia do pipeline, decisão bruta do LFM, overrides,
+componentes, baselines triviais, development/holdout e estabilidade metamórfica.
+Consulte [AVALIACAO_E_TESTES.md](AVALIACAO_E_TESTES.md) para ablações e limites da
+metodologia.
 
 ## RPC Solana
 

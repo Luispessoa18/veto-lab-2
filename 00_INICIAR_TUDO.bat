@@ -4,14 +4,17 @@ cd /d "%~dp0"
 title VETO - Inicializador completo
 
 set "LLAMA=llama\llama-server.exe"
-set "MODEL=models\gemma-3-4b-it-Q4_K_M.gguf"
-set "LORA=models\VETO-Security-LoRA-F16.gguf"
+if not defined VETO_MODEL set "VETO_MODEL=models\veto_lfm2_5_350m_aave_f16.gguf"
+if not defined VETO_NGL set "VETO_NGL=0"
+set "MODEL=%VETO_MODEL%"
+set "LORA_ARGS="
+if defined VETO_LORA set "LORA_ARGS=--lora %VETO_LORA%"
 set "PY=.venv\Scripts\python.exe"
 set "ANVIL_EXE="
 
 if not exist "%LLAMA%" (echo [ERRO] Faltando %LLAMA% & goto :fail)
 if not exist "%MODEL%" (echo [ERRO] Faltando %MODEL% & goto :fail)
-if not exist "%LORA%" (echo [ERRO] Faltando %LORA% & goto :fail)
+if defined VETO_LORA if not exist "%VETO_LORA%" (echo [ERRO] Faltando %VETO_LORA% & goto :fail)
 if not exist "%PY%" (echo [ERRO] Faltando .venv. Execute 01_INSTALAR.bat. & goto :fail)
 if not exist "models\Llama-Prompt-Guard-2-86M\model.safetensors" (echo [ERRO] Modelo Prompt Guard ausente. & goto :fail)
 
@@ -23,7 +26,8 @@ if not defined ANVIL_EXE (
 )
 
 echo Iniciando llama.cpp na porta dedicada 18080...
-start "VETO - IA" /min "%LLAMA%" -m "%MODEL%" --lora "%LORA%" --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl 99 --jinja
+echo Modelo: %MODEL% ^| GPU layers: %VETO_NGL%
+start "VETO - IA" /min "%LLAMA%" -m "%MODEL%" %LORA_ARGS% --host 127.0.0.1 --port 18080 -c 4096 -np 2 -ngl %VETO_NGL% --jinja
 
 if defined ANVIL_EXE (
   echo Iniciando Anvil opcional na porta 8545...

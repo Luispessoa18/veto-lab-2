@@ -13,7 +13,7 @@
   },
   "solana_timeout_seconds": 30,
   "seed": 42,
-  "synthetic_count": 240,
+  "synthetic_count": 600,
   "max_historical": 80,
   "max_output_tokens": 450,
   "llm_timeout_seconds": 150,

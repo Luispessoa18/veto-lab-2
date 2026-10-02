@@ -66,6 +66,28 @@ class TestUnifiedAPI(unittest.TestCase):
         self.assertEqual(response["layers"][1]["layer"], "prompt_guard")
         anvil.assert_called_once()
 
+    def test_model_only_ablation_skips_deterministic_layers_and_simulation(self):
+        pipe = VetoPipeline({"llm_url": "http://llm", "ablation_mode": "model_only"},
+                            blacklist=[WALLET])
+        with patch.object(pipe, "prompt_guard") as guard, \
+             patch.object(pipe, "layer1", return_value={"decision": "ALLOW", "model_decision": "ALLOW"}) as ai, \
+             patch.object(pipe, "simulate_solana") as simulation:
+            response = pipe.verify_transaction({"chain": "solana", "scenario": {
+                "transaction": {"fee_payer": WALLET, "instructions": [{"recipient": "bad"}]}}}, "req-5")
+        self.assertEqual(response["decision"], "ALLOW")
+        guard.assert_not_called(); ai.assert_called_once(); simulation.assert_not_called()
+        self.assertEqual(response["layers"][0]["reason"], "ABLATION_SKIPPED")
+
+    def test_no_model_ablation_reaches_simulation_without_calling_llm(self):
+        pipe = VetoPipeline({"llm_url": "http://llm", "ablation_mode": "no_model"})
+        with patch.object(pipe, "prompt_guard", return_value={"label": "BENIGN"}), \
+             patch.object(pipe, "layer1") as ai, \
+             patch.object(pipe, "simulate_solana", return_value={"decision": "ALLOW", "layer": "solana_simulation", "reason": "ok"}):
+            response = pipe.verify_transaction({"chain": "solana", "scenario": {}}, "req-6")
+        self.assertEqual(response["decision"], "ALLOW")
+        ai.assert_not_called()
+        self.assertEqual(response["layers"][2]["reason"], "ABLATION_SKIPPED")
+
 
 if __name__ == "__main__":
     unittest.main()

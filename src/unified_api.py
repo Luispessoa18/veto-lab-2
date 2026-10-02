@@ -26,6 +26,8 @@ if os.environ.get("SOLANA_RPC_URL"):
     CONF["solana_rpc_url"] = os.environ["SOLANA_RPC_URL"]
 if os.environ.get("SOLANA_CLUSTER"):
     CONF["solana_cluster"] = os.environ["SOLANA_CLUSTER"].lower()
+if os.environ.get("VETO_ABLATION_MODE"):
+    CONF["ablation_mode"] = os.environ["VETO_ABLATION_MODE"].lower()
 AUDIT_PATH = ROOT / "results" / "api_audit.jsonl"
 SOLANA_REPORT_PATH = ROOT / "results" / "solana_attack_report.json"
 AUDIT_LOCK = threading.Lock()
@@ -218,15 +220,20 @@ class VetoPipeline:
 
     def verify_transaction(self, payload, request_id):
         trace = []
+        mode = self.config.get("ablation_mode", "full")
+        if mode not in ("full", "model_only", "no_model"):
+            mode = "full"
         current_blacklist = self.blacklist if self.blacklist is not None else load_blacklist(self.blacklist_path)
         matches = sorted(wallet_addresses(payload) & current_blacklist)
-        check = result("BLOCK" if matches else "ALLOW", "blacklist",
-                       "BLACKLISTED_WALLET" if matches else "NO_BLACKLIST_MATCH", matches=matches)
+        check = result("ALLOW" if mode == "model_only" else ("BLOCK" if matches else "ALLOW"),
+                       "blacklist", "ABLATION_SKIPPED" if mode == "model_only" else
+                       ("BLACKLISTED_WALLET" if matches else "NO_BLACKLIST_MATCH"), matches=matches)
         trace.append(check)
         if check["decision"] == "BLOCK":
             return self.finish(request_id, trace, check)
 
-        guard = self.prompt_guard(payload, request_id, "transaction")
+        guard = ({"label": "BENIGN", "skipped_ablation": True} if mode == "model_only"
+                 else self.prompt_guard(payload, request_id, "transaction"))
         if guard["label"] == "MALICIOUS":
             check = result("BLOCK", "prompt_guard", "PROMPT_INJECTION_DETECTED",
                            security_alert=True, prompt_guard=guard)
@@ -238,15 +245,21 @@ class VetoPipeline:
         if evidence is None:
             scenario = payload.get("scenario")
             evidence = {"scenario": scenario} if isinstance(scenario, dict) else payload
-        conflicts = self.solana_policy(payload) if str(payload.get("chain", "")).lower() == "solana" else []
+        conflicts = (self.solana_policy(payload)
+                     if mode != "model_only" and str(payload.get("chain", "")).lower() == "solana" else [])
         if conflicts:
             check = result("BLOCK", "layer_1", "SOLANA_POLICY_CONFLICT", conflicts=conflicts)
             trace.append(check)
             return self.finish(request_id, trace, check)
-        check = self.layer1(evidence, request_id)
-        check = {"layer": "layer_1", **check}
+        check = (result("ALLOW", "layer_1", "ABLATION_SKIPPED", decision_source="ablation")
+                 if mode == "no_model" else {"layer": "layer_1", **self.layer1(evidence, request_id)})
+        if mode == "model_only" and check.get("model_decision") in ("ALLOW", "BLOCK", "REVIEW"):
+            check["decision"] = check["model_decision"]
+            check["policy_override"] = "ABLATION_OVERRIDES_DISABLED"
         trace.append(check)
         if check.get("decision") in ("BLOCK", "REVIEW", "ERROR", "INVALID"):
+            return self.finish(request_id, trace, check)
+        if mode == "model_only":
             return self.finish(request_id, trace, check)
 
         check = (self.simulate_solana(payload, request_id)
@@ -354,7 +367,7 @@ const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,
 function show(name){for(const n of ['requests','report']){$('view-'+n).classList.toggle('active',n===name);$('tab-'+n).classList.toggle('active',n===name)}if(name==='report')loadReport()}
 async function loadRequests(){try{const d=await fetch('/admin/requests?limit=200',{cache:'no-store'}).then(r=>r.json());$('total').textContent=d.summary.total;$('avg').textContent=d.summary.average_latency_ms+' ms';$('max').textContent=d.summary.max_latency_ms+' ms';$('blocked').textContent=d.summary.blocked;$('rows').innerHTML=d.requests.map(x=>`<tr><td>${esc(x.timestamp)}</td><td>${esc(x.request_id)}</td><td>${esc(x.route)}</td><td class="${esc(x.decision)}">${esc(x.decision)}</td><td>${esc(x.blocked_by||'-')}</td><td>${esc(x.latency_ms)} ms</td><td>${esc((x.layers||[]).map(y=>y.layer+':'+y.decision).join(' → '))}</td></tr>`).join('');$('request-status').textContent='Atualizado '+new Date().toLocaleTimeString()}catch(e){$('request-status').textContent='Falha: '+e}}
 function card(label,value,cls=''){return `<div class="card">${esc(label)}<div class="value ${cls}">${esc(value)}</div></div>`}function tableRows(obj,total){return Object.entries(obj||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td><td><div class="bar"><i style="width:${total?Math.min(100,v/total*100):0}%"></i></div></td></tr>`).join('')}
-async function loadReport(){try{const r=await fetch('/admin/report',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||r.status);const f=d.funnel||{},det=d.attack_detection||{};$('report-content').innerHTML=`<div class="cards">${card('Casos',d.cases)}${card('Acurácia',d.accuracy==null?'-':(d.accuracy*100).toFixed(1)+'%')}${card('Ataques bloqueados',(det.blocked||0)+' / '+(det.attacks||0),'BLOCK')}${card('Chegaram à simulação',f.reached_simulation||0)}</div><div class="grid"><div class="panel"><h2>Funil por camada</h2><table>${tableRows(f,d.cases)}</table></div><div class="panel"><h2>Bloqueios por camada</h2><table>${tableRows(d.blocked_by,d.cases)}</table></div></div><div class="panel"><h2>Resultado por tipo de ataque</h2><table><thead><tr><th>Tipo</th><th>Total</th><th>Esperado</th><th>Obtido</th><th>Bloqueado por</th></tr></thead><tbody>${Object.entries(d.by_attack_type||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v.total}</td><td>${esc(JSON.stringify(v.expected))}</td><td>${esc(JSON.stringify(v.actual))}</td><td>${esc(JSON.stringify(v.blocked_by))}</td></tr>`).join('')}</tbody></table></div><div class="grid"><div class="panel"><h2>Detecções da IA/política (${(d.ai_detections||[]).length})</h2>${details(d.ai_detections)}</div><div class="panel"><h2>Detecções do Prompt Guard (${(d.prompt_guard_detections||[]).length})</h2>${details(d.prompt_guard_detections)}</div></div><div class="panel"><h2>Ataques não bloqueados</h2>${(det.missed||[]).length?`<pre>${esc(det.missed.join('\\n'))}</pre>`:'<span class="ALLOW">Nenhum</span>'}</div>`;$('report-status').textContent='Gerado em '+esc(d.generated_at||'-')}catch(e){$('report-content').innerHTML='<div class="empty">Relatório ainda indisponível. Execute 09_SIMULAR_ATAQUES_SOLANA.bat.</div>';$('report-status').textContent='Falha: '+e}}
+async function loadReport(){try{const r=await fetch('/admin/report',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||r.status);const f=d.funnel||{},det=d.attack_detection||{},m=d.metrics||{},raw=m.raw_model||{};$('report-content').innerHTML=`<div class="cards">${card('Casos',d.cases)}${card('Pipeline',d.accuracy==null?'-':(d.accuracy*100).toFixed(1)+'%')}${card('IA bruta',raw.accuracy==null?'-':(raw.accuracy*100).toFixed(1)+'%')}${card('Ataques bloqueados',(det.blocked||0)+' / '+(det.attacks||0),'BLOCK')}${card('Chegaram à simulação',f.reached_simulation||0)}</div><div class="grid"><div class="panel"><h2>Funil por camada</h2><table>${tableRows(f,d.cases)}</table></div><div class="panel"><h2>Atribuição por componente</h2><table>${tableRows(m.component_attribution||d.blocked_by,d.cases)}</table></div><div class="panel"><h2>Development x holdout</h2>${details(Object.entries(m.by_split||{}).map(([split,value])=>({case_id:split,...value})))}</div><div class="panel"><h2>Overrides e baselines</h2><pre>${esc(JSON.stringify({overrides:m.policy_overrides,baselines:m.baselines},null,2))}</pre></div></div><div class="panel"><h2>Resultado por tipo de ataque</h2><table><thead><tr><th>Tipo</th><th>Total</th><th>Esperado</th><th>Obtido</th><th>Bloqueado por</th></tr></thead><tbody>${Object.entries(d.by_attack_type||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v.total}</td><td>${esc(JSON.stringify(v.expected))}</td><td>${esc(JSON.stringify(v.actual))}</td><td>${esc(JSON.stringify(v.blocked_by))}</td></tr>`).join('')}</tbody></table></div><div class="grid"><div class="panel"><h2>Detecções da IA/política (${(d.ai_detections||[]).length})</h2>${details(d.ai_detections)}</div><div class="panel"><h2>Detecções do Prompt Guard (${(d.prompt_guard_detections||[]).length})</h2>${details(d.prompt_guard_detections)}</div></div><div class="panel"><h2>Ataques não bloqueados</h2>${(det.missed||[]).length?`<pre>${esc(det.missed.join('\\n'))}</pre>`:'<span class="ALLOW">Nenhum</span>'}</div>`;$('report-status').textContent='Seed '+esc(d.generation?.seed||'-')+' · modo '+esc(d.generation?.ablation_mode||'full')+' · '+esc(d.generated_at||'-')}catch(e){$('report-content').innerHTML='<div class="empty">Relatório ainda indisponível. Execute 09_SIMULAR_ATAQUES_SOLANA.bat.</div>';$('report-status').textContent='Falha: '+e}}
 function details(items){return (items||[]).length?(items||[]).map(x=>`<details><summary>${esc(x.case_id)} · ${esc(x.attack_type)}</summary><pre>${esc(JSON.stringify(x,null,2))}</pre></details>`).join(''):'<div class="muted">Nenhum registro.</div>'}
 loadRequests();setInterval(loadRequests,2000);
 </script></body></html>"""
@@ -432,6 +445,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {"status": "ok", "service": "veto-unified-api",
                                     "swagger": "/docs", "admin": "/admin", "openapi": "/openapi.json",
                                     "llm_url": PIPELINE.config.get("llm_url") if PIPELINE else None,
+                                    "ablation_mode": PIPELINE.config.get("ablation_mode", "full") if PIPELINE else None,
                                     "routes": ["/v1/transactions/verify", "/v1/agent/run"]})
         return self.reply(404, {"error": "not found"})
 

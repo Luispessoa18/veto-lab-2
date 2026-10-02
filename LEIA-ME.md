@@ -1,6 +1,6 @@
 # VETO LAB Windows — benchmark de carteira / Gemma GGUF
 
-**Estado honesto desta versão**: executável para 240 casos **sintéticos pareados** com simulação DETERMINÍSTICA EM PYTHON (não Anvil), catalogação de arquivos reais DeFiHackLabs em múltiplas redes e consulta opcional read-only a hashes encontrados. Reproduções `forge test` opcionais são mantidas **em separado**, sem se passar por resultados Anvil ou por rótulos de transações. Não existe integração automática que converta cada ataque histórico em uma transação pré-ataque + pós-execução validada. Não use métricas sintéticas como taxa de detecção de hacks reais.
+**Estado honesto desta versão**: executável para 600 casos-base **sintéticos pareados**, acrescidos de aproximadamente 20% de casos metamórficos, com simulação DETERMINÍSTICA EM PYTHON/RPC mock (não execução on-chain), catalogação de arquivos reais DeFiHackLabs e consulta opcional read-only. Reproduções `forge test` opcionais são mantidas **em separado**, sem se passar por resultados Solana/Anvil ou por rótulos de transações reais. Não use métricas sintéticas como taxa de detecção de hacks reais.
 
 ## Requisitos
 - Windows 10/11 x64; Python 3.11+; Git for Windows (para baixar DeFiHackLabs).
@@ -14,7 +14,7 @@
 2. Coloque o seu arquivo `*.gguf` em `models\`; extraia llama.cpp em `llama\`.
 3. Abra `02_SERVIDOR.bat`; espere `/health` responder OK. O servidor permanece aberto.
 4. Abra `07_PROMPT_GUARD.bat` em outra janela; espere o endpoint `http://127.0.0.1:8090/health`. Ele usa o Meta Llama Prompt Guard 2 86M localmente em CPU.
-5. Em outra janela, execute `03_GERAR_CASOS.bat`. Gera 240 cenários sintéticos balanceados e clona/cataloga até 80 arquivos do repo real por rede identificada.
+5. Em outra janela, execute `03_GERAR_CASOS.bat`. Gera 600 cenários-base balanceados, uma seed aleatória registrada, divisão development/holdout e casos metamórficos Solana.
 6. Execute `04_RODAR_BENCHMARK.bat`. Toda metadata textual não confiável passa primeiro pelo Prompt Guard; somente entradas benignas chegam ao Gemma em `http://127.0.0.1:18080/v1/chat/completions`.
 7. Leia `results\metrics.json`, `results\predictions.jsonl` e `results\prompt_guard.jsonl`. Execute `05_RELATORIO.bat` para recalcular métricas detalhadas e contagens por tipo.
 
@@ -30,7 +30,7 @@ Como alternativa, com o llama.cpp (`02_SERVIDOR.bat`) e o Anvil na porta 8545 at
 
 ### Benchmark de ataques Solana
 
-Com a API ativa, execute `09_SIMULAR_ATAQUES_SOLANA.bat`. Ele consome os 200 fixtures de `synthetic_cases.jsonl`, prepara versões Solana balanceadas e testa blacklist, substituição de destinatário e programa, excesso de valor, delegate approval, divergência detectável pela IA, falha de simulação e prompt injection. Todos os casos entram pela rota pública e respeitam o encerramento antecipado das camadas. O RPC usado pelo benchmark é local e sintético: nenhuma transação é enviada à Solana. Os eventos completos ficam em `results/solana_attack_simulation.jsonl` e o funil por camada em `results/solana_attack_report.json`.
+Com a API ativa, execute `09_SIMULAR_ATAQUES_SOLANA.bat`. Ele executa o arquivo preparado por `03_GERAR_CASOS.bat`, com ordem e valores embaralhados, benignos difíceis, holdout e equivalentes metamórficos. Testa blacklist, substituição de destinatário e programa, excesso de valor, delegate approval, divergência para a IA, falha de simulação e diferentes prompt injections. O RPC do benchmark é local e sintético: nenhuma transação é enviada à Solana. Os eventos ficam em `results/solana_attack_simulation.jsonl` e as métricas separadas do pipeline, IA bruta, overrides, baselines e splits em `results/solana_attack_report.json`.
 
 Cadastre endereços em `config/blacklist.json`. O gerador acrescenta contas Solana sintéticas e determinísticas para exercitar a blacklist; elas não representam uma acusação contra contas reais. Para o Anvil, envie uma transação RPC em `anvil.params` ou os campos `from`, `to`, `value`, `data`, `gas` e `gasPrice` em `transaction`. A resposta inclui `layers`, `blocked` e `blocked_by`, deixando claro quais camadas chegaram a executar.
 

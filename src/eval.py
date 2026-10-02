@@ -142,6 +142,7 @@ def llm_call(url, payload, max_tokens=450, timeout=150, guard_url=None, request_
     request_payload['comparison_summary']={
         'all_match':bool(comparisons) and all(x['matches'] for x in comparisons),
         'any_mismatch':any(not x['matches'] for x in comparisons),
+        'comparison_count':len(comparisons),
         'simulation_supplied':'simulation' in payload,
     }
     metadata=payload.get('scenario',{}).get('contract_metadata',{})
@@ -184,7 +185,19 @@ def llm_call(url, payload, max_tokens=450, timeout=150, guard_url=None, request_
     if decision not in ('ALLOW','BLOCK','REVIEW'):decision='INVALID'
     model_decision=decision
     policy_override=None
-    if request_payload['evidence_status']['inconclusive'] and decision=='ALLOW':
+    if request_payload['comparison_summary']['any_mismatch'] and decision!='BLOCK':
+        decision='BLOCK'
+        policy_override='DETERMINISTIC_MISMATCH'
+    elif (request_payload['comparison_summary']['all_match'] and
+          request_payload['comparison_summary']['comparison_count'] >= 3 and
+          not request_payload['verified_effect_summary']['has_conflict'] and
+          not request_payload['evidence_status']['inconclusive'] and decision!='ALLOW'):
+        # Modelos pequenos podem inventar requisitos (receipt/auditoria) que não fazem
+        # parte da autorização. A IA permanece auditada, mas não cria falso positivo
+        # quando todas as comparações verificáveis são conclusivamente consistentes.
+        decision='ALLOW'
+        policy_override='DETERMINISTIC_CONSISTENCY'
+    elif request_payload['evidence_status']['inconclusive'] and decision=='ALLOW':
         decision='REVIEW'
         policy_override='INCONCLUSIVE_CONTRACT_EVIDENCE'
     return {'decision':decision,'model_decision':model_decision,'decision_source':'llm_policy',

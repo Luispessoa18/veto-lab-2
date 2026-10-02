@@ -6,6 +6,17 @@ title VETO - Simulador de ataques Solana
 set "PY=.venv\Scripts\python.exe"
 if not exist "%PY%" (echo [ERRO] Ambiente .venv ausente. Execute 01_INSTALAR.bat. & pause & exit /b 1)
 
+if not exist "results\synthetic_cases.jsonl" (
+  echo Casos-base ausentes; gerando 600 casos...
+  "%PY%" -m src.main generate --count 600
+  if errorlevel 1 (echo [ERRO] Nao foi possivel gerar os casos-base. & pause & exit /b 1)
+)
+if not exist "results\solana_cases.jsonl" (
+  echo Casos Solana ausentes; preparando dataset adversarial...
+  "%PY%" -m src.solana_attack_simulator --prepare-only --limit 600
+  if errorlevel 1 (echo [ERRO] Nao foi possivel preparar os casos Solana. & pause & exit /b 1)
+)
+
 curl.exe --fail --silent --max-time 3 http://127.0.0.1:8070/health 2>nul | findstr.exe /c:"18080" >nul
 if not errorlevel 1 curl.exe --fail --silent --max-time 3 http://127.0.0.1:18080/health >nul 2>nul
 if errorlevel 1 (
@@ -21,7 +32,7 @@ if errorlevel 1 (
 )
 
 echo Executando casos sinteticos. Nenhuma transacao sera enviada para a Solana.
-"%PY%" -m src.solana_attack_simulator --api http://127.0.0.1:8070
+"%PY%" -m src.solana_attack_simulator --api http://127.0.0.1:8070 --prepared results\solana_cases.jsonl
 if errorlevel 1 (echo [ERRO] O benchmark falhou. & pause & exit /b 1)
 echo.
 echo Resultado: results\solana_attack_simulation.jsonl
