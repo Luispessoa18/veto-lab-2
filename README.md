@@ -24,13 +24,13 @@ O Prompt Guard é um modelo restrito: aceite a licença em <https://huggingface.
    set HF_TOKEN=hf_xxx
    BAIXAR_MODELOS.bat
    ```
-4. Crie o ambiente Python (usado pela API e pelo Prompt Guard):
+4. Crie o ambiente Python único (usado pelo benchmark, API e Prompt Guard):
    ```bat
-   py -3 -m venv .venv-lora
-   .venv-lora\Scripts\python.exe -m pip install -r requirements-guard.txt
+   py -3 -m venv .venv
+   .venv\Scripts\python.exe -m pip install -r requirements-guard.txt
    ```
-   E o ambiente leve do benchmark: `01_INSTALAR.bat`.
-5. Suba tudo: `00_INICIAR_TUDO.bat` → abre o Swagger em <http://127.0.0.1:8070/docs>.
+   No Windows, `01_INSTALAR.bat` executa esses passos automaticamente.
+5. Suba tudo: `00_INICIAR_TUDO.bat` → abre o Swagger em <http://127.0.0.1:8070/docs> e o painel em <http://127.0.0.1:8070/admin>. O painel acompanha requisições, latências e o relatório detalhado do benchmark Solana. O Anvil é opcional e só é iniciado quando está instalado; ele não é necessário para o fluxo Solana.
 
 Os demais `.bat` (`02_SERVIDOR`, `03_GERAR_CASOS`, `04_RODAR_BENCHMARK`, ...) seguem descritos no [LEIA-ME.md](LEIA-ME.md).
 
@@ -86,12 +86,12 @@ curl -L https://foundry.paradigm.xyz | bash
 ./iniciar_tudo.sh          # GPU
 NGL=0 ./iniciar_tudo.sh    # somente CPU
 ```
-Sobe llama.cpp (8080), Anvil (8545) e API + Prompt Guard (8070). Logs em `results/*.log`. Swagger: <http://127.0.0.1:8070/docs>. `CTRL+C` encerra tudo.
+Sobe llama.cpp (18080), Anvil opcional (8545) e API + Prompt Guard (8070). Logs em `results/*.log`. Swagger: <http://127.0.0.1:8070/docs>. `CTRL+C` encerra tudo.
 
 Para subir cada serviço manualmente:
 ```bash
 $LLAMA_SERVER -m models/gemma-3-4b-it-Q4_K_M.gguf --lora models/VETO-Security-LoRA-F16.gguf \
-  --host 127.0.0.1 --port 8080 -c 8192 -np 2 -ngl 99 --jinja
+  --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl 99 --jinja
 anvil --host 127.0.0.1 --port 8545
 .venv/bin/python -m src.unified_api --host 127.0.0.1 --port 8070
 # Prompt Guard standalone (usado pelo benchmark):
@@ -109,6 +109,37 @@ anvil --host 127.0.0.1 --port 8545
 | `08_API_UNICA.bat` | `.venv/bin/python -m src.unified_api --port 8070` |
 | `09_SIMULAR_ATAQUES_SOLANA.bat` | `.venv/bin/python -m src.solana_attack_simulator --api http://127.0.0.1:8070` |
 | testes | `.venv/bin/python -m unittest discover -s tests` |
+
+## RPC Solana
+
+`09_SIMULAR_ATAQUES_SOLANA.bat` executa casos sintéticos e sobe um RPC mock somente
+em `127.0.0.1`; ele não transmite transações nem precisa de acesso à mainnet.
+
+Para verificar uma transação Solana real já serializada, configure um endpoint RPC
+antes de iniciar a API:
+
+```bat
+set "SOLANA_RPC_URL=https://seu-endpoint-solana"
+08_API_UNICA.bat
+```
+
+Também é possível alterar `solana_rpc_url` em `config/settings.json`. A API chama
+apenas `simulateTransaction`, com `sigVerify=false` e
+`replaceRecentBlockhash=true`; ela não chama `sendTransaction`. Não coloque chaves
+privadas no arquivo de configuração.
+
+Por padrão, `config/settings.json` já contém os RPCs públicos oficiais de Devnet,
+Testnet e Mainnet. Devnet é o cluster padrão. Para selecionar outro endpoint sem
+editar o arquivo:
+
+```bat
+set "SOLANA_CLUSTER=testnet"
+08_API_UNICA.bat
+```
+
+Ou informe `"cluster": "mainnet"`, `"testnet"` ou `"devnet"` dentro do objeto
+`solana` da requisição. A transação serializada deve ter sido construída para o
+cluster escolhido. Os endpoints públicos têm limite de uso e não oferecem SLA.
 
 `03_GERAR_CASOS`/`catalog` clonam o DeFiHackLabs em `external/` (precisa de `git`).
 

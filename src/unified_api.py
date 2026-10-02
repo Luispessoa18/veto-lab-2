@@ -10,10 +10,11 @@ import re
 import threading
 import time
 import uuid
+from collections import Counter, deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 
@@ -21,7 +22,12 @@ from .eval import llm_call, untrusted_texts
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
+if os.environ.get("SOLANA_RPC_URL"):
+    CONF["solana_rpc_url"] = os.environ["SOLANA_RPC_URL"]
+if os.environ.get("SOLANA_CLUSTER"):
+    CONF["solana_cluster"] = os.environ["SOLANA_CLUSTER"].lower()
 AUDIT_PATH = ROOT / "results" / "api_audit.jsonl"
+SOLANA_REPORT_PATH = ROOT / "results" / "solana_attack_report.json"
 AUDIT_LOCK = threading.Lock()
 GUARD_SERVER = None
 ADDRESS_FIELDS = {
@@ -177,7 +183,13 @@ class VetoPipeline:
 
     def simulate_solana(self, payload, request_id):
         spec = payload.get("solana", {})
-        rpc_url = spec.get("rpc_url") or self.config.get("solana_rpc_url", "http://127.0.0.1:8899")
+        cluster = str(spec.get("cluster") or self.config.get("solana_cluster", "devnet")).lower()
+        rpc_by_cluster = self.config.get("solana_rpc_by_cluster", {})
+        rpc_url = (spec.get("rpc_url") or self.config.get("solana_rpc_url")
+                   or rpc_by_cluster.get(cluster))
+        if not rpc_url:
+            return result("REVIEW", "solana_simulation", "SOLANA_RPC_NOT_CONFIGURED",
+                          cluster=cluster)
         serialized = spec.get("serialized_transaction")
         if not isinstance(serialized, str) or not serialized:
             return result("REVIEW", "solana_simulation", "SOLANA_TRANSACTION_MISSING")
@@ -190,16 +202,19 @@ class VetoPipeline:
                                      timeout=self.config.get("solana_timeout_seconds", 30))
             response.raise_for_status(); body = response.json()
         except Exception as exc:
-            return result("REVIEW", "solana_simulation", "SOLANA_RPC_UNAVAILABLE", error=str(exc)[:300])
+            return result("REVIEW", "solana_simulation", "SOLANA_RPC_UNAVAILABLE",
+                          cluster=cluster, error=str(exc)[:300])
         latency = round((time.perf_counter() - started) * 1000, 2)
         if body.get("error"):
-            return result("BLOCK", "solana_simulation", "SOLANA_RPC_ERROR", rpc_error=body["error"], latency_ms=latency)
+            return result("BLOCK", "solana_simulation", "SOLANA_RPC_ERROR", cluster=cluster,
+                          rpc_error=body["error"], latency_ms=latency)
         value = body.get("result", {}).get("value", {})
         if value.get("err") is not None:
-            return result("BLOCK", "solana_simulation", "SOLANA_SIMULATION_FAILED",
+            return result("BLOCK", "solana_simulation", "SOLANA_SIMULATION_FAILED", cluster=cluster,
                           simulation_error=value.get("err"), logs=value.get("logs", []), latency_ms=latency)
         return result("ALLOW", "solana_simulation", "SOLANA_SIMULATION_SUCCEEDED",
-                      units_consumed=value.get("unitsConsumed"), logs=value.get("logs", []), latency_ms=latency)
+                      cluster=cluster, units_consumed=value.get("unitsConsumed"),
+                      logs=value.get("logs", []), latency_ms=latency)
 
     def verify_transaction(self, payload, request_id):
         trace = []
@@ -217,6 +232,7 @@ class VetoPipeline:
                            security_alert=True, prompt_guard=guard)
             trace.append(check)
             return self.finish(request_id, trace, check)
+        trace.append(result("ALLOW", "prompt_guard", "NO_PROMPT_INJECTION", prompt_guard=guard))
 
         evidence = payload.get("evidence")
         if evidence is None:
@@ -309,7 +325,7 @@ def openapi_schema():
                     "anvil": {"type": "object", "additionalProperties": True,
                               "example": {"method": "eth_call", "params": [{"from": "0x...", "to": "0x...", "data": "0x..."}, "latest"]}},
                     "solana": {"type": "object", "additionalProperties": True,
-                               "example": {"serialized_transaction": "BASE64_TRANSACTION", "encoding": "base64", "commitment": "confirmed"}},
+                               "example": {"cluster": "devnet", "serialized_transaction": "BASE64_TRANSACTION", "encoding": "base64", "commitment": "confirmed"}},
                 },
             },
             "AgentRequest": {
@@ -329,11 +345,50 @@ SWAGGER_HTML = """<!doctype html>
 <script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui',deepLinking:true,tryItOutEnabled:true});</script>
 </body></html>"""
 
+ADMIN_HTML = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VETO Admin</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{font:14px system-ui;margin:0;background:#0b1020;color:#e8edf7}.wrap{max-width:1500px;margin:auto;padding:24px}h1,h2{margin:0 0 8px}.muted{color:#8fa0bd}.tabs{display:flex;gap:8px;margin:22px 0}.tabs button.active{background:#6386ed}.view{display:none}.view.active{display:block}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:18px 0}.card,.panel,table{background:#121a2e;border:1px solid #26324b;border-radius:10px}.card,.panel{padding:16px}.value{font-size:26px;font-weight:700;margin-top:5px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px;margin:14px 0}table{width:100%;border-collapse:collapse;overflow:hidden}th,td{text-align:left;padding:9px;border-bottom:1px solid #26324b;vertical-align:top}th{color:#9eafd0}.ALLOW{color:#5ee09a}.BLOCK{color:#ff7185}.REVIEW,.ERROR,.INVALID{color:#ffc766}button{background:#3662e3;color:white;border:0;border-radius:7px;padding:8px 12px;cursor:pointer}.bar{height:9px;background:#26324b;border-radius:6px;overflow:hidden;margin-top:5px}.bar i{display:block;height:100%;background:#6386ed}details{border-bottom:1px solid #26324b;padding:9px 0}pre{white-space:pre-wrap;word-break:break-word;color:#c7d2e8}.empty{padding:30px;text-align:center;color:#8fa0bd}
+</style></head><body><div class="wrap"><h1>VETO Admin</h1><div class="muted">Monitoramento local da API e benchmark Solana</div><div class="tabs"><button id="tab-requests" class="active" onclick="show('requests')">Requisições</button><button id="tab-report" onclick="show('report')">Dashboard do relatório</button></div>
+<section id="view-requests" class="view active"><div class="cards"><div class="card">Requisições recentes<div class="value" id="total">0</div></div><div class="card">Latência média<div class="value" id="avg">0 ms</div></div><div class="card">Latência máxima<div class="value" id="max">0 ms</div></div><div class="card">Bloqueadas<div class="value BLOCK" id="blocked">0</div></div></div><p><button onclick="loadRequests()">Atualizar</button> <span id="request-status" class="muted"></span></p><table><thead><tr><th>Horário</th><th>ID</th><th>Rota</th><th>Decisão</th><th>Bloqueada por</th><th>Latência</th><th>Camadas executadas</th></tr></thead><tbody id="rows"></tbody></table></section>
+<section id="view-report" class="view"><p><button onclick="loadReport()">Atualizar relatório</button> <span id="report-status" class="muted"></span></p><div id="report-content"><div class="empty">Execute 09_SIMULAR_ATAQUES_SOLANA.bat para gerar o relatório.</div></div></section></div><script>
+const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function show(name){for(const n of ['requests','report']){$('view-'+n).classList.toggle('active',n===name);$('tab-'+n).classList.toggle('active',n===name)}if(name==='report')loadReport()}
+async function loadRequests(){try{const d=await fetch('/admin/requests?limit=200',{cache:'no-store'}).then(r=>r.json());$('total').textContent=d.summary.total;$('avg').textContent=d.summary.average_latency_ms+' ms';$('max').textContent=d.summary.max_latency_ms+' ms';$('blocked').textContent=d.summary.blocked;$('rows').innerHTML=d.requests.map(x=>`<tr><td>${esc(x.timestamp)}</td><td>${esc(x.request_id)}</td><td>${esc(x.route)}</td><td class="${esc(x.decision)}">${esc(x.decision)}</td><td>${esc(x.blocked_by||'-')}</td><td>${esc(x.latency_ms)} ms</td><td>${esc((x.layers||[]).map(y=>y.layer+':'+y.decision).join(' → '))}</td></tr>`).join('');$('request-status').textContent='Atualizado '+new Date().toLocaleTimeString()}catch(e){$('request-status').textContent='Falha: '+e}}
+function card(label,value,cls=''){return `<div class="card">${esc(label)}<div class="value ${cls}">${esc(value)}</div></div>`}function tableRows(obj,total){return Object.entries(obj||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td><td><div class="bar"><i style="width:${total?Math.min(100,v/total*100):0}%"></i></div></td></tr>`).join('')}
+async function loadReport(){try{const r=await fetch('/admin/report',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||r.status);const f=d.funnel||{},det=d.attack_detection||{};$('report-content').innerHTML=`<div class="cards">${card('Casos',d.cases)}${card('Acurácia',d.accuracy==null?'-':(d.accuracy*100).toFixed(1)+'%')}${card('Ataques bloqueados',(det.blocked||0)+' / '+(det.attacks||0),'BLOCK')}${card('Chegaram à simulação',f.reached_simulation||0)}</div><div class="grid"><div class="panel"><h2>Funil por camada</h2><table>${tableRows(f,d.cases)}</table></div><div class="panel"><h2>Bloqueios por camada</h2><table>${tableRows(d.blocked_by,d.cases)}</table></div></div><div class="panel"><h2>Resultado por tipo de ataque</h2><table><thead><tr><th>Tipo</th><th>Total</th><th>Esperado</th><th>Obtido</th><th>Bloqueado por</th></tr></thead><tbody>${Object.entries(d.by_attack_type||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v.total}</td><td>${esc(JSON.stringify(v.expected))}</td><td>${esc(JSON.stringify(v.actual))}</td><td>${esc(JSON.stringify(v.blocked_by))}</td></tr>`).join('')}</tbody></table></div><div class="grid"><div class="panel"><h2>Detecções da IA/política (${(d.ai_detections||[]).length})</h2>${details(d.ai_detections)}</div><div class="panel"><h2>Detecções do Prompt Guard (${(d.prompt_guard_detections||[]).length})</h2>${details(d.prompt_guard_detections)}</div></div><div class="panel"><h2>Ataques não bloqueados</h2>${(det.missed||[]).length?`<pre>${esc(det.missed.join('\\n'))}</pre>`:'<span class="ALLOW">Nenhum</span>'}</div>`;$('report-status').textContent='Gerado em '+esc(d.generated_at||'-')}catch(e){$('report-content').innerHTML='<div class="empty">Relatório ainda indisponível. Execute 09_SIMULAR_ATAQUES_SOLANA.bat.</div>';$('report-status').textContent='Falha: '+e}}
+function details(items){return (items||[]).length?(items||[]).map(x=>`<details><summary>${esc(x.case_id)} · ${esc(x.attack_type)}</summary><pre>${esc(JSON.stringify(x,null,2))}</pre></details>`).join(''):'<div class="muted">Nenhum registro.</div>'}
+loadRequests();setInterval(loadRequests,2000);
+</script></body></html>"""
+
 
 def audit(entry):
     AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with AUDIT_LOCK, AUDIT_PATH.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def recent_audit(limit=200):
+    limit = max(1, min(int(limit), 1000))
+    if not AUDIT_PATH.exists():
+        rows = []
+    else:
+        with AUDIT_LOCK, AUDIT_PATH.open(encoding="utf-8") as stream:
+            rows = [json.loads(line) for line in deque(stream, maxlen=limit) if line.strip()]
+    rows.reverse()
+    latencies = [float(row.get("latency_ms", 0)) for row in rows]
+    decisions = Counter(row.get("decision", "UNKNOWN") for row in rows)
+    return {"summary": {"total": len(rows), "blocked": decisions.get("BLOCK", 0),
+                        "average_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else 0,
+                        "max_latency_ms": round(max(latencies), 2) if latencies else 0,
+                        "decisions": dict(decisions)}, "requests": rows}
+
+
+def solana_report():
+    if not SOLANA_REPORT_PATH.exists():
+        return None
+    try:
+        return json.loads(SOLANA_REPORT_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -346,7 +401,24 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        route = urlsplit(self.path).path
+        parsed_url = urlsplit(self.path)
+        route = parsed_url.path
+        if route == "/admin":
+            data = ADMIN_HTML.encode("utf-8")
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            return
+        if route == "/admin/requests":
+            try:
+                limit = int(parse_qs(parsed_url.query).get("limit", ["200"])[0])
+            except ValueError:
+                return self.reply(400, {"error": "limit deve ser inteiro"})
+            return self.reply(200, recent_audit(limit))
+        if route == "/admin/report":
+            report = solana_report()
+            if report is None:
+                return self.reply(404, {"error": "relatório Solana ainda não foi gerado"})
+            return self.reply(200, report)
         if route == "/docs":
             data = SWAGGER_HTML.encode("utf-8")
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -358,7 +430,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(302); self.send_header("Location", "/docs"); self.end_headers(); return
         if route == "/health":
             return self.reply(200, {"status": "ok", "service": "veto-unified-api",
-                                    "swagger": "/docs", "openapi": "/openapi.json",
+                                    "swagger": "/docs", "admin": "/admin", "openapi": "/openapi.json",
+                                    "llm_url": PIPELINE.config.get("llm_url") if PIPELINE else None,
                                     "routes": ["/v1/transactions/verify", "/v1/agent/run"]})
         return self.reply(404, {"error": "not found"})
 

@@ -13,8 +13,8 @@ if not exist "%LORA%" (echo [ERRO] Faltando o adaptador LoRA GGUF: "%LORA%". & p
 
 echo Modelo base: %MODEL%
 echo LoRA:        %LORA%
-echo Servidor:    http://127.0.0.1:8080
+echo Servidor:    http://127.0.0.1:18080
 echo.
-"%SERVER%" -m "%MODEL%" --lora "%LORA%" --host 127.0.0.1 --port 8080 -c 8192 -np 2 -ngl 99 --jinja
+"%SERVER%" -m "%MODEL%" --lora "%LORA%" --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl 99 --jinja
 if errorlevel 1 echo [ERRO] O llama-server foi encerrado com erro.
 pause

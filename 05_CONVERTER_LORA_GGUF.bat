@@ -135,7 +135,7 @@ echo [5/5] Modelo final Q5_K_M confirmado.
 echo.
 echo [OK] Modelo final com LoRA embutido: "%FINAL%"
 echo Iniciando o servidor com o GGUF Q5_K_M unico. CTRL+C para parar.
-"%SERVER%" -m "%FINAL%" --host 127.0.0.1 --port 8080 -ngl 99 -c 2048
+"%SERVER%" -m "%FINAL%" --host 127.0.0.1 --port 18080 -ngl 99 -c 2048
 if errorlevel 1 goto :fail
 pause
 exit /b 0

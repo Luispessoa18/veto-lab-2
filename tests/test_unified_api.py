@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from src.unified_api import VetoPipeline, openapi_schema
+from src.unified_api import ADMIN_HTML, VetoPipeline, openapi_schema
 
 
 WALLET = "0x" + "a" * 40
@@ -12,6 +12,12 @@ class TestUnifiedAPI(unittest.TestCase):
         paths = openapi_schema()["paths"]
         self.assertIn("/v1/transactions/verify", paths)
         self.assertIn("/v1/agent/run", paths)
+
+    def test_admin_contains_requests_and_report_dashboards(self):
+        self.assertIn("view-requests", ADMIN_HTML)
+        self.assertIn("view-report", ADMIN_HTML)
+        self.assertIn("/admin/report", ADMIN_HTML)
+        self.assertIn("attack_detection", ADMIN_HTML)
 
     def test_solana_policy_blocks_recipient_substitution(self):
         payload = {"chain": "solana", "scenario": {"intent": {"recipient": "expected"},
@@ -56,7 +62,8 @@ class TestUnifiedAPI(unittest.TestCase):
              patch.object(pipe, "simulate_anvil", return_value={"decision": "ALLOW", "layer": "anvil", "reason": "ok"}) as anvil:
             response = pipe.verify_transaction({"scenario": {}}, "req-4")
         self.assertEqual(response["decision"], "ALLOW")
-        self.assertEqual(len(response["layers"]), 3)
+        self.assertEqual(len(response["layers"]), 4)
+        self.assertEqual(response["layers"][1]["layer"], "prompt_guard")
         anvil.assert_called_once()
 
 

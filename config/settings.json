@@ -1,10 +1,16 @@
 {
-  "llm_url": "http://127.0.0.1:8080/v1/chat/completions",
+  "llm_url": "http://127.0.0.1:18080/v1/chat/completions",
   "prompt_guard_url": "http://127.0.0.1:8090/scan",
   "blacklist_path": "config/blacklist.json",
   "anvil_rpc_url": "http://127.0.0.1:8545",
   "anvil_timeout_seconds": 30,
-  "solana_rpc_url": "http://127.0.0.1:8899",
+  "solana_rpc_url": "",
+  "solana_cluster": "devnet",
+  "solana_rpc_by_cluster": {
+    "devnet": "https://api.devnet.solana.com",
+    "testnet": "https://api.testnet.solana.com",
+    "mainnet": "https://api.mainnet.solana.com"
+  },
   "solana_timeout_seconds": 30,
   "seed": 42,
   "synthetic_count": 240,

@@ -15,7 +15,7 @@
 3. Abra `02_SERVIDOR.bat`; espere `/health` responder OK. O servidor permanece aberto.
 4. Abra `07_PROMPT_GUARD.bat` em outra janela; espere o endpoint `http://127.0.0.1:8090/health`. Ele usa o Meta Llama Prompt Guard 2 86M localmente em CPU.
 5. Em outra janela, execute `03_GERAR_CASOS.bat`. Gera 240 cenários sintéticos balanceados e clona/cataloga até 80 arquivos do repo real por rede identificada.
-6. Execute `04_RODAR_BENCHMARK.bat`. Toda metadata textual não confiável passa primeiro pelo Prompt Guard; somente entradas benignas chegam ao Gemma em `http://127.0.0.1:8080/v1/chat/completions`.
+6. Execute `04_RODAR_BENCHMARK.bat`. Toda metadata textual não confiável passa primeiro pelo Prompt Guard; somente entradas benignas chegam ao Gemma em `http://127.0.0.1:18080/v1/chat/completions`.
 7. Leia `results\metrics.json`, `results\predictions.jsonl` e `results\prompt_guard.jsonl`. Execute `05_RELATORIO.bat` para recalcular métricas detalhadas e contagens por tipo.
 
 ## API única de decisão
@@ -30,9 +30,9 @@ Como alternativa, com o llama.cpp (`02_SERVIDOR.bat`) e o Anvil na porta 8545 at
 
 ### Benchmark de ataques Solana
 
-Com a API ativa, execute `09_SIMULAR_ATAQUES_SOLANA.bat`. Ele testa blacklist, substituição de destinatário e programa, excesso de valor, delegate approval, falha de simulação e prompt injection em inglês/português. Todos os casos entram pelas rotas públicas e respeitam o encerramento antecipado das camadas. O RPC usado pelo benchmark é local e sintético: nenhuma transação é enviada à Solana. O resultado completo fica em `results/solana_attack_simulation.jsonl`.
+Com a API ativa, execute `09_SIMULAR_ATAQUES_SOLANA.bat`. Ele consome os 200 fixtures de `synthetic_cases.jsonl`, prepara versões Solana balanceadas e testa blacklist, substituição de destinatário e programa, excesso de valor, delegate approval, divergência detectável pela IA, falha de simulação e prompt injection. Todos os casos entram pela rota pública e respeitam o encerramento antecipado das camadas. O RPC usado pelo benchmark é local e sintético: nenhuma transação é enviada à Solana. Os eventos completos ficam em `results/solana_attack_simulation.jsonl` e o funil por camada em `results/solana_attack_report.json`.
 
-Cadastre endereços em `config/blacklist.json`. Para o Anvil, envie uma transação RPC em `anvil.params` ou os campos `from`, `to`, `value`, `data`, `gas` e `gasPrice` em `transaction`. A resposta inclui `layers`, `blocked` e `blocked_by`, deixando claro quais camadas chegaram a executar.
+Cadastre endereços em `config/blacklist.json`. O gerador acrescenta contas Solana sintéticas e determinísticas para exercitar a blacklist; elas não representam uma acusação contra contas reais. Para o Anvil, envie uma transação RPC em `anvil.params` ou os campos `from`, `to`, `value`, `data`, `gas` e `gasPrice` em `transaction`. A resposta inclui `layers`, `blocked` e `blocked_by`, deixando claro quais camadas chegaram a executar.
 
 Para fazer uma rodada rápida de 4 cenários: `.venv\Scripts\python.exe -m src.main run --limit 4`.
 Para gerar 300 cenários: `.venv\Scripts\python.exe -m src.main generate --count 300`.

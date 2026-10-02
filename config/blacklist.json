@@ -4,7 +4,29 @@
     "contracts": []
   },
   "solana": {
-    "accounts": ["BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"],
+    "accounts": [
+      "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "Gf4o2TQSWP5axP7E6ryUgXeCjLgPuiXR",
+      "VBvtwxhwcUBLzKNn2faA5133Q5S8MxeP",
+      "AYcWD6JQioRcCt8QxYXtYY8eXYDDJNA8",
+      "uLHGNUeAGhDdxnrLTt7VnMs3d1isPdA9",
+      "dBwD1gZ57Pw738kQLYnjYguKau76T725",
+      "VDaWKSq1oVJ19v5MKvu2ATzGL1BC7Y63",
+      "opSgcUvRh71zQPPFMWeZRXGd56p5NV7Q",
+      "sL8W2hjHZvUAVeFL4uKnFNPHMuSToqPW",
+      "cVKqhxExSWHQu4YcerSfj1X8TQkDysFp",
+      "8PuZvY3AHJEJp7xaXU1cW2DqHE6PdVJS",
+      "AZL5MH3fCQhLPBMNwF4HxBHtXeNCcarJ",
+      "dFAWY3WkzrjoAZ24GDTR4MXVo4UK2qGB",
+      "Zw3DSHf1YzENowGB4VyoLszMJKrUqAQL",
+      "2AvevVSLv5EzYa4rwbRDvPJuUpwqrhby",
+      "68N1oboR8kw6Uy1pa3sWVm5J2r6Ghg9g",
+      "Qk5oasMji4c7B9CankNCzpE63WdAAUou",
+      "Fsbg35JoJQf3yVGbQ4uoNp6q8boJByen",
+      "BZWzGNXKfA8Dwg5jx83Xxkdf8Bn3H3Cq",
+      "zN62pxASiMWrZAnN4ib3J2K7wfxyMD3p",
+      "kJgecehWc89st8DbWVGNYjEV5E2Lp8eC"
+    ],
     "programs": [],
     "mints": []
   }

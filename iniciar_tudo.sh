@@ -21,8 +21,8 @@ ANVIL="$(command -v anvil || echo "$HOME/.foundry/bin/anvil")"
 pids=()
 trap 'echo; echo Encerrando...; kill "${pids[@]}" 2>/dev/null || true' EXIT INT TERM
 
-echo "Iniciando llama.cpp na porta 8080 (log: results/llama.log)..."
-"$LLAMA" -m "$MODEL" --lora "$LORA" --host 127.0.0.1 --port 8080 -c 8192 -np 2 -ngl "$NGL" --jinja > results/llama.log 2>&1 &
+echo "Iniciando llama.cpp na porta 18080 (log: results/llama.log)..."
+"$LLAMA" -m "$MODEL" --lora "$LORA" --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl "$NGL" --jinja > results/llama.log 2>&1 &
 pids+=($!)
 
 echo "Iniciando Anvil na porta 8545 (log: results/anvil.log)..."
