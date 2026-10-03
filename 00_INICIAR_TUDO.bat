@@ -3,9 +3,20 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 title VETO - Inicializador completo
 
+rem ===== CONFIGURACAO =====
+rem USAR_GPU=1 roda o LLM na GPU (CUDA). USAR_GPU=0 roda so na CPU.
+if not defined USAR_GPU set "USAR_GPU=1"
+rem MODELO=gemma usa Gemma 3 4B + LoRA VETO. MODELO=lfm usa LFM2.5 350M Q8 (LoRA embutido).
+if not defined MODELO set "MODELO=gemma"
+rem =========================
+
 set "LLAMA=llama\llama-server.exe"
-if not defined VETO_MODEL set "VETO_MODEL=models\veto_lfm2_5_350m_aave_f16.gguf"
-if not defined VETO_NGL set "VETO_NGL=0"
+if /i "%MODELO%"=="gemma" (
+  if not defined VETO_MODEL set "VETO_MODEL=models\gemma-3-4b-it-Q4_K_M.gguf"
+  if not defined VETO_LORA set "VETO_LORA=models\VETO-Security-LoRA-F16.gguf"
+)
+if not defined VETO_MODEL set "VETO_MODEL=models\veto_lfm2_5_350m_aave_q8_0.gguf"
+if not defined VETO_NGL if "%USAR_GPU%"=="1" (set "VETO_NGL=99") else (set "VETO_NGL=0")
 set "MODEL=%VETO_MODEL%"
 set "LORA_ARGS="
 if defined VETO_LORA set "LORA_ARGS=--lora %VETO_LORA%"
@@ -17,6 +28,7 @@ if not exist "%MODEL%" (echo [ERRO] Faltando %MODEL% & goto :fail)
 if defined VETO_LORA if not exist "%VETO_LORA%" (echo [ERRO] Faltando %VETO_LORA% & goto :fail)
 if not exist "%PY%" (echo [ERRO] Faltando .venv. Execute 01_INSTALAR.bat. & goto :fail)
 if not exist "models\Llama-Prompt-Guard-2-86M\model.safetensors" (echo [ERRO] Modelo Prompt Guard ausente. & goto :fail)
+"%PY%" -c "import torch, transformers, requests" >nul 2>nul || (echo [ERRO] Dependencias Python incompletas. Execute 01_INSTALAR.bat ate o fim. & goto :fail)
 
 for /f "delims=" %%I in ('where anvil.exe 2^>nul') do if not defined ANVIL_EXE set "ANVIL_EXE=%%I"
 if not defined ANVIL_EXE if exist "%USERPROFILE%\.foundry\bin\anvil.exe" set "ANVIL_EXE=%USERPROFILE%\.foundry\bin\anvil.exe"
@@ -27,7 +39,7 @@ if not defined ANVIL_EXE (
 
 echo Iniciando llama.cpp na porta dedicada 18080...
 echo Modelo: %MODEL% ^| GPU layers: %VETO_NGL%
-start "VETO - IA" /min "%LLAMA%" -m "%MODEL%" %LORA_ARGS% --host 127.0.0.1 --port 18080 -c 4096 -np 2 -ngl %VETO_NGL% --jinja
+start "VETO - IA" cmd /k ""%LLAMA%" -m "%MODEL%" %LORA_ARGS% --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl %VETO_NGL% --jinja"
 
 if defined ANVIL_EXE (
   echo Iniciando Anvil opcional na porta 8545...
@@ -35,7 +47,7 @@ if defined ANVIL_EXE (
 )
 
 echo Iniciando API e Prompt Guard na porta 8070...
-start "VETO - API + Prompt Guard" /min "%PY%" -m src.unified_api --host 127.0.0.1 --port 8070
+start "VETO - API + Prompt Guard" cmd /k ""%PY%" -m src.unified_api --host 127.0.0.1 --port 8070"
 
 echo Aguardando a API carregar os modelos...
 call :wait_api

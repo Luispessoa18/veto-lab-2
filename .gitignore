@@ -6,6 +6,7 @@
 *.gguf
 !models/VETO-Security-LoRA-F16.gguf
 models/Llama-Prompt-Guard-2-86M/
+models/PIGuard/
 models/VETO-Security-Gemma3-4B-LoRA/
 *.safetensors
 
@@ -18,3 +19,4 @@ external/
 __pycache__/
 *.pyc
 results/tmp*/
+results/tmp*

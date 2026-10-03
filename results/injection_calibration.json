@@ -1,0 +1,292 @@
+{
+  "generated_at": "2026-10-02T21:06:36.712227",
+  "detectors": [
+    "Llama-Prompt-Guard-2-86M",
+    "PIGuard"
+  ],
+  "threshold": 0.96,
+  "block_threshold": 0.995,
+  "max_fpr": 0.15,
+  "max_fpr_block": 0.01,
+  "validation": {
+    "threshold": 0.96,
+    "attacks": 2103,
+    "benign": 1127,
+    "detected": 1545,
+    "missed": 558,
+    "false_positive": 160,
+    "recall": 0.7347,
+    "false_positive_rate": 0.142,
+    "precision": 0.9062
+  },
+  "validation_block": {
+    "threshold": 0.995,
+    "attacks": 2103,
+    "benign": 1127,
+    "detected": 624,
+    "missed": 1479,
+    "false_positive": 10,
+    "recall": 0.2967,
+    "false_positive_rate": 0.0089,
+    "precision": 0.9842
+  },
+  "validation_by_dataset": {
+    "neuralchemy": {
+      "veto_block": {
+        "attacks": 534,
+        "benign": 407,
+        "detected": 207,
+        "missed": 327,
+        "false_positive": 6,
+        "recall": 0.3876,
+        "false_positive_rate": 0.0147,
+        "precision": 0.9718
+      },
+      "veto": {
+        "attacks": 534,
+        "benign": 407,
+        "detected": 381,
+        "missed": 153,
+        "false_positive": 35,
+        "recall": 0.7135,
+        "false_positive_rate": 0.086,
+        "precision": 0.9159
+      }
+    },
+    "Necent (amostra)": {
+      "veto_block": {
+        "attacks": 1569,
+        "benign": 720,
+        "detected": 417,
+        "missed": 1152,
+        "false_positive": 4,
+        "recall": 0.2658,
+        "false_positive_rate": 0.0056,
+        "precision": 0.9905
+      },
+      "veto": {
+        "attacks": 1569,
+        "benign": 720,
+        "detected": 1164,
+        "missed": 405,
+        "false_positive": 125,
+        "recall": 0.7419,
+        "false_positive_rate": 0.1736,
+        "precision": 0.903
+      }
+    }
+  },
+  "sweep_alert": [
+    {
+      "threshold": 0.1,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1937,
+      "missed": 166,
+      "false_positive": 472,
+      "recall": 0.9211,
+      "false_positive_rate": 0.4188,
+      "precision": 0.8041
+    },
+    {
+      "threshold": 0.3,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1858,
+      "missed": 245,
+      "false_positive": 368,
+      "recall": 0.8835,
+      "false_positive_rate": 0.3265,
+      "precision": 0.8347
+    },
+    {
+      "threshold": 0.5,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1803,
+      "missed": 300,
+      "false_positive": 315,
+      "recall": 0.8573,
+      "false_positive_rate": 0.2795,
+      "precision": 0.8513
+    },
+    {
+      "threshold": 0.7,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1739,
+      "missed": 364,
+      "false_positive": 263,
+      "recall": 0.8269,
+      "false_positive_rate": 0.2334,
+      "precision": 0.8686
+    },
+    {
+      "threshold": 0.8,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1700,
+      "missed": 403,
+      "false_positive": 237,
+      "recall": 0.8084,
+      "false_positive_rate": 0.2103,
+      "precision": 0.8776
+    },
+    {
+      "threshold": 0.9,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1634,
+      "missed": 469,
+      "false_positive": 199,
+      "recall": 0.777,
+      "false_positive_rate": 0.1766,
+      "precision": 0.8914
+    },
+    {
+      "threshold": 0.95,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1571,
+      "missed": 532,
+      "false_positive": 171,
+      "recall": 0.747,
+      "false_positive_rate": 0.1517,
+      "precision": 0.9018
+    },
+    {
+      "threshold": 0.96,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1545,
+      "missed": 558,
+      "false_positive": 160,
+      "recall": 0.7347,
+      "false_positive_rate": 0.142,
+      "precision": 0.9062
+    },
+    {
+      "threshold": 0.99,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1409,
+      "missed": 694,
+      "false_positive": 89,
+      "recall": 0.67,
+      "false_positive_rate": 0.079,
+      "precision": 0.9406
+    },
+    {
+      "threshold": 0.995,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1301,
+      "missed": 802,
+      "false_positive": 49,
+      "recall": 0.6186,
+      "false_positive_rate": 0.0435,
+      "precision": 0.9637
+    }
+  ],
+  "sweep_block": [
+    {
+      "threshold": 0.1,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1258,
+      "missed": 845,
+      "false_positive": 168,
+      "recall": 0.5982,
+      "false_positive_rate": 0.1491,
+      "precision": 0.8822
+    },
+    {
+      "threshold": 0.3,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1136,
+      "missed": 967,
+      "false_positive": 126,
+      "recall": 0.5402,
+      "false_positive_rate": 0.1118,
+      "precision": 0.9002
+    },
+    {
+      "threshold": 0.5,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 1058,
+      "missed": 1045,
+      "false_positive": 94,
+      "recall": 0.5031,
+      "false_positive_rate": 0.0834,
+      "precision": 0.9184
+    },
+    {
+      "threshold": 0.7,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 973,
+      "missed": 1130,
+      "false_positive": 66,
+      "recall": 0.4627,
+      "false_positive_rate": 0.0586,
+      "precision": 0.9365
+    },
+    {
+      "threshold": 0.8,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 921,
+      "missed": 1182,
+      "false_positive": 57,
+      "recall": 0.4379,
+      "false_positive_rate": 0.0506,
+      "precision": 0.9417
+    },
+    {
+      "threshold": 0.9,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 860,
+      "missed": 1243,
+      "false_positive": 38,
+      "recall": 0.4089,
+      "false_positive_rate": 0.0337,
+      "precision": 0.9577
+    },
+    {
+      "threshold": 0.95,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 791,
+      "missed": 1312,
+      "false_positive": 25,
+      "recall": 0.3761,
+      "false_positive_rate": 0.0222,
+      "precision": 0.9694
+    },
+    {
+      "threshold": 0.99,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 677,
+      "missed": 1426,
+      "false_positive": 12,
+      "recall": 0.3219,
+      "false_positive_rate": 0.0106,
+      "precision": 0.9826
+    },
+    {
+      "threshold": 0.995,
+      "attacks": 2103,
+      "benign": 1127,
+      "detected": 624,
+      "missed": 1479,
+      "false_positive": 10,
+      "recall": 0.2967,
+      "false_positive_rate": 0.0089,
+      "precision": 0.9842
+    }
+  ]
+}

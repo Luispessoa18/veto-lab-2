@@ -105,7 +105,7 @@ set "VETO_NGL=99"
 Para subir cada serviço manualmente:
 ```bash
 $LLAMA_SERVER -m models/veto_lfm2_5_350m_aave_f16.gguf \
-  --host 127.0.0.1 --port 18080 -c 4096 -np 2 -ngl 0 --jinja
+  --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl 0 --jinja
 anvil --host 127.0.0.1 --port 8545
 .venv/bin/python -m src.unified_api --host 127.0.0.1 --port 8070
 # Prompt Guard standalone (usado pelo benchmark):

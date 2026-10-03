@@ -1,0 +1,627 @@
+{
+  "generated_at": "2026-10-02T21:07:55.032944",
+  "threshold": 0.96,
+  "block_threshold": 0.995,
+  "detectors": [
+    "before",
+    "rules",
+    "m:Llama-Prompt-Guard-2-86M",
+    "m:PIGuard",
+    "veto_block",
+    "veto"
+  ],
+  "guard": true,
+  "results": {
+    "neuralchemy": {
+      "split": "test",
+      "cases": 942,
+      "group_field": "category",
+      "metrics": {
+        "before": {
+          "attacks": 552,
+          "benign": 390,
+          "detected": 273,
+          "missed": 279,
+          "false_positive": 9,
+          "recall": 0.4946,
+          "false_positive_rate": 0.0231,
+          "precision": 0.9681
+        },
+        "rules": {
+          "attacks": 552,
+          "benign": 390,
+          "detected": 43,
+          "missed": 509,
+          "false_positive": 0,
+          "recall": 0.0779,
+          "false_positive_rate": 0.0,
+          "precision": 1.0
+        },
+        "m:Llama-Prompt-Guard-2-86M": {
+          "attacks": 552,
+          "benign": 390,
+          "detected": 280,
+          "missed": 272,
+          "false_positive": 8,
+          "recall": 0.5072,
+          "false_positive_rate": 0.0205,
+          "precision": 0.9722
+        },
+        "m:PIGuard": {
+          "attacks": 552,
+          "benign": 390,
+          "detected": 355,
+          "missed": 197,
+          "false_positive": 34,
+          "recall": 0.6431,
+          "false_positive_rate": 0.0872,
+          "precision": 0.9126
+        },
+        "veto_block": {
+          "attacks": 552,
+          "benign": 390,
+          "detected": 226,
+          "missed": 326,
+          "false_positive": 2,
+          "recall": 0.4094,
+          "false_positive_rate": 0.0051,
+          "precision": 0.9912
+        },
+        "veto": {
+          "attacks": 552,
+          "benign": 390,
+          "detected": 390,
+          "missed": 162,
+          "false_positive": 37,
+          "recall": 0.7065,
+          "false_positive_rate": 0.0949,
+          "precision": 0.9133
+        }
+      },
+      "groups": {
+        "direct_injection|1": {
+          "group": "direct_injection",
+          "label": 1,
+          "cases": 314,
+          "before": 222,
+          "rules": 31,
+          "m:Llama-Prompt-Guard-2-86M": 224,
+          "m:PIGuard": 247,
+          "veto_block": 184,
+          "veto": 274
+        },
+        "adversarial|1": {
+          "group": "adversarial",
+          "label": 1,
+          "cases": 79,
+          "before": 2,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 4,
+          "m:PIGuard": 28,
+          "veto_block": 2,
+          "veto": 29
+        },
+        "jailbreak|1": {
+          "group": "jailbreak",
+          "label": 1,
+          "cases": 50,
+          "before": 21,
+          "rules": 4,
+          "m:Llama-Prompt-Guard-2-86M": 20,
+          "m:PIGuard": 24,
+          "veto_block": 16,
+          "veto": 25
+        },
+        "encoding|1": {
+          "group": "encoding",
+          "label": 1,
+          "cases": 30,
+          "before": 2,
+          "rules": 1,
+          "m:Llama-Prompt-Guard-2-86M": 3,
+          "m:PIGuard": 14,
+          "veto_block": 3,
+          "veto": 14
+        },
+        "training_extraction|1": {
+          "group": "training_extraction",
+          "label": 1,
+          "cases": 10,
+          "before": 2,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 2,
+          "m:PIGuard": 6,
+          "veto_block": 1,
+          "veto": 6
+        },
+        "agent_manipulation|1": {
+          "group": "agent_manipulation",
+          "label": 1,
+          "cases": 8,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 3,
+          "veto_block": 0,
+          "veto": 3
+        },
+        "token_smuggling|1": {
+          "group": "token_smuggling",
+          "label": 1,
+          "cases": 7,
+          "before": 5,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 6,
+          "m:PIGuard": 7,
+          "veto_block": 5,
+          "veto": 7
+        },
+        "context_confusion|1": {
+          "group": "context_confusion",
+          "label": 1,
+          "cases": 6,
+          "before": 4,
+          "rules": 1,
+          "m:Llama-Prompt-Guard-2-86M": 5,
+          "m:PIGuard": 4,
+          "veto_block": 3,
+          "veto": 5
+        },
+        "control|1": {
+          "group": "control",
+          "label": 1,
+          "cases": 5,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 0,
+          "veto_block": 0,
+          "veto": 0
+        },
+        "output_manipulation|1": {
+          "group": "output_manipulation",
+          "label": 1,
+          "cases": 5,
+          "before": 1,
+          "rules": 1,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 0,
+          "veto_block": 1,
+          "veto": 1
+        },
+        "prompt_injection|1": {
+          "group": "prompt_injection",
+          "label": 1,
+          "cases": 4,
+          "before": 2,
+          "rules": 2,
+          "m:Llama-Prompt-Guard-2-86M": 3,
+          "m:PIGuard": 2,
+          "veto_block": 2,
+          "veto": 3
+        },
+        "response_manipulation|1": {
+          "group": "response_manipulation",
+          "label": 1,
+          "cases": 4,
+          "before": 1,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 2,
+          "m:PIGuard": 2,
+          "veto_block": 0,
+          "veto": 3
+        },
+        "system_manipulation|1": {
+          "group": "system_manipulation",
+          "label": 1,
+          "cases": 4,
+          "before": 1,
+          "rules": 1,
+          "m:Llama-Prompt-Guard-2-86M": 2,
+          "m:PIGuard": 4,
+          "veto_block": 1,
+          "veto": 4
+        },
+        "multi_turn|1": {
+          "group": "multi_turn",
+          "label": 1,
+          "cases": 4,
+          "before": 2,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 2,
+          "m:PIGuard": 1,
+          "veto_block": 1,
+          "veto": 2
+        },
+        "rag_poisoning|1": {
+          "group": "rag_poisoning",
+          "label": 1,
+          "cases": 4,
+          "before": 2,
+          "rules": 1,
+          "m:Llama-Prompt-Guard-2-86M": 2,
+          "m:PIGuard": 4,
+          "veto_block": 2,
+          "veto": 4
+        },
+        "instruction_override|1": {
+          "group": "instruction_override",
+          "label": 1,
+          "cases": 4,
+          "before": 2,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 1,
+          "m:PIGuard": 4,
+          "veto_block": 1,
+          "veto": 4
+        },
+        "persona_replacement|1": {
+          "group": "persona_replacement",
+          "label": 1,
+          "cases": 3,
+          "before": 1,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 1,
+          "m:PIGuard": 1,
+          "veto_block": 1,
+          "veto": 1
+        },
+        "prompt_extraction|1": {
+          "group": "prompt_extraction",
+          "label": 1,
+          "cases": 3,
+          "before": 1,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 1,
+          "m:PIGuard": 1,
+          "veto_block": 1,
+          "veto": 1
+        },
+        "system_extraction|1": {
+          "group": "system_extraction",
+          "label": 1,
+          "cases": 2,
+          "before": 1,
+          "rules": 1,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 0,
+          "veto_block": 1,
+          "veto": 1
+        },
+        "payload_injection|1": {
+          "group": "payload_injection",
+          "label": 1,
+          "cases": 2,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 1,
+          "veto_block": 0,
+          "veto": 1
+        },
+        "encoding_obfuscation|1": {
+          "group": "encoding_obfuscation",
+          "label": 1,
+          "cases": 1,
+          "before": 1,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 1,
+          "m:PIGuard": 1,
+          "veto_block": 1,
+          "veto": 1
+        },
+        "indirect_injection|1": {
+          "group": "indirect_injection",
+          "label": 1,
+          "cases": 1,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 0,
+          "veto_block": 0,
+          "veto": 0
+        },
+        "many_shot|1": {
+          "group": "many_shot",
+          "label": 1,
+          "cases": 1,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 0,
+          "veto_block": 0,
+          "veto": 0
+        },
+        "token_injection|1": {
+          "group": "token_injection",
+          "label": 1,
+          "cases": 1,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 1,
+          "m:PIGuard": 1,
+          "veto_block": 0,
+          "veto": 1
+        },
+        "benign|0": {
+          "group": "benign",
+          "label": 0,
+          "cases": 381,
+          "before": 8,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 7,
+          "m:PIGuard": 34,
+          "veto_block": 2,
+          "veto": 36
+        },
+        "edge_case|0": {
+          "group": "edge_case",
+          "label": 0,
+          "cases": 9,
+          "before": 1,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 1,
+          "m:PIGuard": 0,
+          "veto_block": 0,
+          "veto": 1
+        }
+      }
+    },
+    "Necent (amostra)": {
+      "split": "test",
+      "cases": 2209,
+      "group_field": "source",
+      "metrics": {
+        "before": {
+          "attacks": 1529,
+          "benign": 680,
+          "detected": 741,
+          "missed": 788,
+          "false_positive": 116,
+          "recall": 0.4846,
+          "false_positive_rate": 0.1706,
+          "precision": 0.8646
+        },
+        "rules": {
+          "attacks": 1529,
+          "benign": 680,
+          "detected": 156,
+          "missed": 1373,
+          "false_positive": 0,
+          "recall": 0.102,
+          "false_positive_rate": 0.0,
+          "precision": 1.0
+        },
+        "m:Llama-Prompt-Guard-2-86M": {
+          "attacks": 1529,
+          "benign": 680,
+          "detected": 704,
+          "missed": 825,
+          "false_positive": 100,
+          "recall": 0.4604,
+          "false_positive_rate": 0.1471,
+          "precision": 0.8756
+        },
+        "m:PIGuard": {
+          "attacks": 1529,
+          "benign": 680,
+          "detected": 901,
+          "missed": 628,
+          "false_positive": 27,
+          "recall": 0.5893,
+          "false_positive_rate": 0.0397,
+          "precision": 0.9709
+        },
+        "veto_block": {
+          "attacks": 1529,
+          "benign": 680,
+          "detected": 381,
+          "missed": 1148,
+          "false_positive": 0,
+          "recall": 0.2492,
+          "false_positive_rate": 0.0,
+          "precision": 1.0
+        },
+        "veto": {
+          "attacks": 1529,
+          "benign": 680,
+          "detected": 1129,
+          "missed": 400,
+          "false_positive": 119,
+          "recall": 0.7384,
+          "false_positive_rate": 0.175,
+          "precision": 0.9046
+        }
+      },
+      "groups": {
+        "SPML|1": {
+          "group": "SPML",
+          "label": 1,
+          "cases": 160,
+          "before": 146,
+          "rules": 26,
+          "m:Llama-Prompt-Guard-2-86M": 134,
+          "m:PIGuard": 21,
+          "veto_block": 26,
+          "veto": 136
+        },
+        "Gandalf-Ignore|1": {
+          "group": "Gandalf-Ignore",
+          "label": 1,
+          "cases": 151,
+          "before": 143,
+          "rules": 62,
+          "m:Llama-Prompt-Guard-2-86M": 143,
+          "m:PIGuard": 139,
+          "veto_block": 124,
+          "veto": 149
+        },
+        "InjecAgent|1": {
+          "group": "InjecAgent",
+          "label": 1,
+          "cases": 148,
+          "before": 46,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 35,
+          "m:PIGuard": 142,
+          "veto_block": 14,
+          "veto": 142
+        },
+        "LLMail-Inject|1": {
+          "group": "LLMail-Inject",
+          "label": 1,
+          "cases": 147,
+          "before": 66,
+          "rules": 6,
+          "m:Llama-Prompt-Guard-2-86M": 56,
+          "m:PIGuard": 38,
+          "veto_block": 8,
+          "veto": 77
+        },
+        "ObfuscationAugmenter|1": {
+          "group": "ObfuscationAugmenter",
+          "label": 1,
+          "cases": 146,
+          "before": 3,
+          "rules": 1,
+          "m:Llama-Prompt-Guard-2-86M": 21,
+          "m:PIGuard": 114,
+          "veto_block": 13,
+          "veto": 115
+        },
+        "jayavibhav-PI|1": {
+          "group": "jayavibhav-PI",
+          "label": 1,
+          "cases": 145,
+          "before": 59,
+          "rules": 4,
+          "m:Llama-Prompt-Guard-2-86M": 52,
+          "m:PIGuard": 74,
+          "veto_block": 25,
+          "veto": 83
+        },
+        "safe-guard-PI|1": {
+          "group": "safe-guard-PI",
+          "label": 1,
+          "cases": 143,
+          "before": 64,
+          "rules": 19,
+          "m:Llama-Prompt-Guard-2-86M": 60,
+          "m:PIGuard": 64,
+          "veto_block": 43,
+          "veto": 71
+        },
+        "TensorTrust|1": {
+          "group": "TensorTrust",
+          "label": 1,
+          "cases": 137,
+          "before": 136,
+          "rules": 35,
+          "m:Llama-Prompt-Guard-2-86M": 136,
+          "m:PIGuard": 134,
+          "veto_block": 113,
+          "veto": 137
+        },
+        "deepset-prompt-injections|1": {
+          "group": "deepset-prompt-injections",
+          "label": 1,
+          "cases": 137,
+          "before": 22,
+          "rules": 3,
+          "m:Llama-Prompt-Guard-2-86M": 20,
+          "m:PIGuard": 99,
+          "veto_block": 14,
+          "veto": 100
+        },
+        "BIPIA|1": {
+          "group": "BIPIA",
+          "label": 1,
+          "cases": 122,
+          "before": 1,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 1,
+          "m:PIGuard": 70,
+          "veto_block": 0,
+          "veto": 70
+        },
+        "ToolEmu|1": {
+          "group": "ToolEmu",
+          "label": 1,
+          "cases": 70,
+          "before": 52,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 44,
+          "m:PIGuard": 1,
+          "veto_block": 0,
+          "veto": 44
+        },
+        "ArtPrompt|1": {
+          "group": "ArtPrompt",
+          "label": 1,
+          "cases": 23,
+          "before": 3,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 2,
+          "m:PIGuard": 5,
+          "veto_block": 1,
+          "veto": 5
+        },
+        "deepset-prompt-injections|0": {
+          "group": "deepset-prompt-injections",
+          "label": 0,
+          "cases": 161,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 0,
+          "veto_block": 0,
+          "veto": 0
+        },
+        "SPML|0": {
+          "group": "SPML",
+          "label": 0,
+          "cases": 153,
+          "before": 112,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 98,
+          "m:PIGuard": 8,
+          "veto_block": 0,
+          "veto": 99
+        },
+        "jayavibhav-PI|0": {
+          "group": "jayavibhav-PI",
+          "label": 0,
+          "cases": 142,
+          "before": 4,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 2,
+          "m:PIGuard": 8,
+          "veto_block": 0,
+          "veto": 9
+        },
+        "safe-guard-PI|0": {
+          "group": "safe-guard-PI",
+          "label": 0,
+          "cases": 129,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 2,
+          "veto_block": 0,
+          "veto": 2
+        },
+        "BIPIA|0": {
+          "group": "BIPIA",
+          "label": 0,
+          "cases": 95,
+          "before": 0,
+          "rules": 0,
+          "m:Llama-Prompt-Guard-2-86M": 0,
+          "m:PIGuard": 9,
+          "veto_block": 0,
+          "veto": 9
+        }
+      }
+    }
+  }
+}

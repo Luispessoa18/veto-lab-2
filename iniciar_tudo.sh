@@ -24,7 +24,7 @@ trap 'echo; echo Encerrando...; kill "${pids[@]}" 2>/dev/null || true' EXIT INT 
 echo "Iniciando llama.cpp na porta 18080 (log: results/llama.log)..."
 LORA_ARGS=()
 [ -z "$LORA" ] || LORA_ARGS=(--lora "$LORA")
-"$LLAMA" -m "$MODEL" "${LORA_ARGS[@]}" --host 127.0.0.1 --port 18080 -c 4096 -np 2 -ngl "$NGL" --jinja > results/llama.log 2>&1 &
+"$LLAMA" -m "$MODEL" "${LORA_ARGS[@]}" --host 127.0.0.1 --port 18080 -c 8192 -np 2 -ngl "$NGL" --jinja > results/llama.log 2>&1 &
 pids+=($!)
 
 echo "Iniciando Anvil na porta 8545 (log: results/anvil.log)..."

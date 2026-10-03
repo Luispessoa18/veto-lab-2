@@ -18,7 +18,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import requests
 
-from .eval import llm_call, untrusted_texts
+from .deobfuscate import decode_variants
+from .eval import llm_call
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -38,6 +39,42 @@ ADDRESS_FIELDS = {
     "effective_implementation", "approved_implementation", "program_id",
     "mint", "pubkey", "fee_payer", "authority", "delegate",
 }
+
+# Filtro de texto por exclusão: um valor só é "dado estruturado" se tem formato de dado
+# (endereço, número, identificador curto, URL do RPC, base64 da transação). Qualquer outra
+# string, em qualquer chave, é texto livre não confiável: passa pelas regras anti-injection e
+# pelo Prompt Guard e não chega à IA. Antes, só chaves com nomes conhecidos eram filtradas.
+SHAPE_ADDRESS = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40}")
+SHAPE_NUMBER = re.compile(r"-?\d+(\.\d+)?")
+SHAPE_IDENTIFIER = re.compile(r"[A-Za-z0-9_.:\-]{1,64}")
+SHAPE_BY_KEY = {
+    "serialized_transaction": re.compile(r"[A-Za-z0-9+/=_\-]+"),
+    "data": re.compile(r"[A-Za-z0-9+/=]+"),
+    "rpc_url": re.compile(r"https?://[A-Za-z0-9.\-]+(:\d+)?(/[A-Za-z0-9._~/\-]*)?"),
+}
+
+
+def is_structured(value, key):
+    shape = SHAPE_BY_KEY.get(key)
+    if shape is not None:
+        return bool(shape.fullmatch(value))
+    return bool(SHAPE_ADDRESS.fullmatch(value) or SHAPE_NUMBER.fullmatch(value) or SHAPE_IDENTIFIER.fullmatch(value))
+
+
+def free_texts(payload):
+    """Todas as strings do payload que não têm formato de dado estruturado (texto livre)."""
+    texts = []
+    def visit(value, key):
+        if isinstance(value, dict):
+            for child_key, item in value.items():
+                visit(item, str(child_key).lower())
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, key)
+        elif isinstance(value, str) and not is_structured(value, key):
+            texts.append(value[:12000])
+    visit(payload, "")
+    return list(dict.fromkeys(texts))
 
 
 def normalize_address(value):
@@ -87,6 +124,73 @@ def wallet_addresses(payload):
     return found
 
 
+QUARANTINE_MARK = "[QUARENTENA: texto removido pelo Prompt Guard]"
+OMITTED_MARK = "[TEXTO LIVRE NAO CONFIAVEL OMITIDO]"
+# Metadados de token/contrato não têm motivo legítimo para falar com o verificador:
+# texto que tenta ditar o veredito ou anular regras é tratado como ataque.
+STEERING_RULES = (
+    ("VERDICT_KEYWORD", "cita o veredito do sistema (ALLOW/BLOCK/REVIEW)",
+     re.compile(r"\b(ALLOW|BLOCK|REVIEW)\b")),
+    ("DECISION_FIELD", "tenta preencher decisão/confiança da análise",
+     re.compile(r"\b(decision|decisão|veredito)\s*[:=]|\bconfidence\s*[:=]?\s*(1(\.0+)?|100\s*%)(?![\d.])"
+                r"|\bresultado obrigat[oó]rio\b", re.I)),
+    ("IGNORE_INSTRUCTIONS", "manda ignorar instruções ou regras",
+     re.compile(r"\b(ignore|disregard|forget|override|ignor[ae]|esque[cç]a)\b.{0,30}"
+                r"\b(instructions?|rules?|polic(y|ies)|instru[cç](ão|ões)|regras?|pol[ií]tica)\b", re.I)),
+    ("FORCED_TRUST", "manda tratar dados como confiáveis ou ignorar a política",
+     re.compile(r"\btreat\b.{0,40}\bas trusted\b|\bregardless of\b.{0,20}\b(policy|rules)\b"
+                r"|\bindependente(mente)? d[ae]\b.{0,20}\b(pol[ií]tica|regras?)\b", re.I)),
+    ("APPROVAL_ORDER", "ordena aprovar/autorizar a transação",
+     re.compile(r"\b(approve|authorize|aprove|autorize)\s+(it|this|esta|essa|isso|a transa[cç][aã]o)\b", re.I)),
+    ("HIDDEN_DIRECTIVE", "se apresenta como instrução de sistema ou oculta",
+     re.compile(r"\bsystem(\s+\w+)?\s+(note|prompt|message|instruction)\b|\bsilently\b|\bsilenciosamente\b", re.I)),
+)
+
+
+def steering_matches(payload, deobfuscate=True):
+    """Regras determinísticas para texto não confiável que tenta comandar o verificador.
+
+    Com deobfuscate, as regras também rodam sobre as versões decodificadas do texto."""
+    found = []
+    def visit(value, path):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                visit(item, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{path}[{index}]")
+        elif isinstance(value, str) and value[:12000] in untrusted:
+            forms = [("original", value), *(decode_variants(value) if deobfuscate else [])]
+            rules, decoded_by = [], []
+            for code, text, pattern in STEERING_RULES:
+                methods = [method for method, form in forms if pattern.search(form)]
+                if methods:
+                    rules.append({"rule": code, "description": text})
+                    decoded_by += [method for method in methods if method != "original"]
+            if rules:
+                match = {"field": path, "text": value[:240], "rules": rules}
+                if decoded_by and not any(pattern.search(value) for _, _, pattern in STEERING_RULES):
+                    match["decoded_by"] = sorted(set(decoded_by))
+                found.append(match)
+    untrusted = set(free_texts(payload))
+    visit(payload, "")
+    return found
+
+
+def replace_texts(value, flagged, mark=QUARANTINE_MARK, path=""):
+    """Copia o payload trocando os textos em `flagged` por `mark`; devolve também os caminhos trocados."""
+    if isinstance(value, dict):
+        pairs = [(key, replace_texts(item, flagged, mark, f"{path}.{key}" if path else str(key)))
+                 for key, item in value.items()]
+        return {key: new for key, (new, _) in pairs}, [p for _, (_, paths) in pairs for p in paths]
+    if isinstance(value, list):
+        pairs = [replace_texts(item, flagged, mark, f"{path}[{index}]") for index, item in enumerate(value)]
+        return [new for new, _ in pairs], [p for _, paths in pairs for p in paths]
+    if isinstance(value, str) and value[:12000] in flagged:
+        return mark, [(path, value[:12000])]
+    return value, []
+
+
 def result(decision, layer, reason, **extra):
     value = {"decision": decision, "layer": layer, "reason": reason}
     value.update(extra)
@@ -105,7 +209,13 @@ class VetoPipeline:
                           if blacklist is not None else None)
 
     def prompt_guard(self, payload, request_id, source):
-        texts = untrusted_texts(payload)
+        """Pontua cada texto livre em todos os detectores (com as versões decodificadas).
+
+        label: MALICIOUS  -> todos os detectores >= prompt_guard_block_threshold no mesmo texto (bloqueia)
+               SUSPICIOUS -> algum detector >= prompt_guard_threshold (quarentena + alerta)
+               BENIGN     -> nada acima dos limites
+        """
+        texts = free_texts(payload)
         # Na rota do agente, o prompt em si e sempre entrada nao confiavel.
         if source == "agent" and isinstance(payload.get("prompt"), str):
             texts.insert(0, payload["prompt"][:12000])
@@ -113,9 +223,33 @@ class VetoPipeline:
             return {"label": "BENIGN", "malicious_score": 0.0, "segments": [], "skipped_empty": True}
         if GUARD_SERVER is None:
             raise RuntimeError("prompt guard nao inicializado")
-        scan = GUARD_SERVER.classify(texts)
-        scan.update({"request_id": request_id, "source": source})
-        return scan
+        block_at = float(self.config.get("prompt_guard_block_threshold", 0.99))
+        flag_at = float(self.config.get("prompt_guard_threshold", 0.5))
+        forms = [[text, *([form for _, form in decode_variants(text)] if self.config.get("deobfuscate", True) else [])]
+                 for text in texts]
+        flat = list(dict.fromkeys(form for row in forms for form in row))
+        by_model = {name: dict(zip(flat, values)) for name, values in GUARD_SERVER.text_scores_by_model(flat).items()}
+        segments = []
+        for text, row in zip(texts, forms):
+            scores = {name: round(max(values[form] for form in row), 6) for name, values in by_model.items()}
+            segments.append({"text": text, "scores": scores, "malicious_score": max(scores.values()),
+                             "consensus_score": min(scores.values())})
+        top = max(segment["malicious_score"] for segment in segments)
+        consensus = max(segment["consensus_score"] for segment in segments)
+        label = "MALICIOUS" if consensus >= block_at else "SUSPICIOUS" if top >= flag_at else "BENIGN"
+        return {"label": label, "malicious_score": top, "consensus_score": consensus,
+                "threshold": flag_at, "block_threshold": block_at, "models": list(by_model),
+                "flagged_texts": [segment["text"] for segment in segments if segment["malicious_score"] >= flag_at],
+                "segments": [{**{k: v for k, v in segment.items() if k != "text"}, "text_preview": segment["text"][:240]}
+                             for segment in sorted(segments, key=lambda item: -item["malicious_score"])],
+                "request_id": request_id, "source": source}
+
+    def quarantine(self, payload, guard):
+        """Troca os textos marcados pelos detectores por QUARANTINE_MARK, para a IA não lê-los."""
+        scores = {segment.get("text_preview"): segment.get("malicious_score") for segment in guard.get("segments", [])}
+        clean, replaced = replace_texts(payload, set(guard.get("flagged_texts", [])))
+        return clean, [{"field": path, "malicious_score": scores.get(text[:240]), "text": text[:240]}
+                       for path, text in replaced]
 
     def layer1(self, evidence, request_id):
         return llm_call(
@@ -134,23 +268,66 @@ class VetoPipeline:
         conflicts = []
         dangerous = {"set_authority", "approve_delegate", "close_account", "upgrade_program"}
         allowed_programs = set(intent.get("allowed_programs", []))
+        allowed_actions = intent.get("allowed_actions", [])
+
+        def number(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        max_amount = number(intent.get("max_amount"))
+        totals = {}
         for index, instruction in enumerate(instructions):
             prefix = f"scenario.transaction.instructions[{index}]"
+            kind = instruction.get("type")
             program = instruction.get("program_id")
             if allowed_programs and program not in allowed_programs:
                 conflicts.append({"field": f"{prefix}.program_id", "reason": "PROGRAM_NOT_AUTHORIZED"})
-            if instruction.get("type") in dangerous and instruction.get("type") not in intent.get("allowed_actions", []):
+            if kind in dangerous and kind not in allowed_actions:
                 conflicts.append({"field": f"{prefix}.type", "reason": "DANGEROUS_ACTION_NOT_AUTHORIZED"})
-            for field in ("recipient", "mint"):
+            for field in ("recipient", "mint", "input_mint", "output_mint"):
                 expected = intent.get(field)
                 actual = instruction.get(field)
                 if expected is not None and actual is not None and expected != actual:
                     conflicts.append({"field": f"{prefix}.{field}", "reason": f"{field.upper()}_MISMATCH"})
-            try:
-                if int(instruction.get("amount", 0)) > int(intent["max_amount"]):
+            amount = number(instruction.get("amount"))
+            if kind == "approve_delegate":
+                # Approve é validado contra o teto e o delegate que a intenção declara, não contra
+                # o limite da transferência.
+                cap = number(intent.get("allowance_cap"))
+                limit = cap if cap is not None else max_amount
+                if amount is not None and limit is not None and amount > limit:
+                    conflicts.append({"field": f"{prefix}.amount", "reason": "ALLOWANCE_EXCEEDS_CAP"})
+                if intent.get("delegate") and instruction.get("delegate") != intent["delegate"]:
+                    conflicts.append({"field": f"{prefix}.delegate", "reason": "DELEGATE_MISMATCH"})
+            elif amount is not None and max_amount is not None:
+                if amount > max_amount:
                     conflicts.append({"field": f"{prefix}.amount", "reason": "AMOUNT_EXCEEDS_LIMIT"})
-            except (KeyError, TypeError, ValueError):
-                pass
+                if kind in ("transfer", "transfer_checked"):
+                    key = (instruction.get("recipient"), instruction.get("mint"))
+                    totals[key] = totals.get(key, 0) + amount
+            if kind == "swap":
+                authorized_min = number(intent.get("min_amount_out"))
+                proposed_min = number(instruction.get("minimum_amount_out"))
+                if authorized_min is not None and (proposed_min is None or proposed_min < authorized_min):
+                    conflicts.append({"field": f"{prefix}.minimum_amount_out", "reason": "MIN_OUT_BELOW_AUTHORIZED"})
+        # Várias transferências pequenas não podem somar mais que o limite autorizado.
+        if max_amount is not None and not any(c["reason"] == "AMOUNT_EXCEEDS_LIMIT" for c in conflicts):
+            for (recipient, mint), total in totals.items():
+                if total > max_amount:
+                    conflicts.append({"field": "scenario.transaction.instructions[*].amount",
+                                      "reason": "TOTAL_AMOUNT_EXCEEDS_LIMIT"})
+        # Extensões do Token-2022 que dão controle dos tokens a terceiros. Em produção estes
+        # dados devem vir da conta do mint lida via RPC, não de metadados enviados pelo dApp.
+        mint_info = {**scenario.get("contract_metadata", {}), **scenario.get("mint_info", {})}
+        extensions = mint_info.get("mint_extensions") or []
+        allowed_extensions = set(intent.get("allowed_mint_extensions", []))
+        for extension in ("permanent_delegate", "transfer_hook"):
+            if (extension in extensions or mint_info.get(extension)) and extension not in allowed_extensions:
+                conflicts.append({"field": "scenario.contract_metadata.mint_extensions",
+                                  "reason": "DANGEROUS_MINT_EXTENSION"})
+                break
         return conflicts
 
     def simulate_anvil(self, payload):
@@ -232,19 +409,45 @@ class VetoPipeline:
         if check["decision"] == "BLOCK":
             return self.finish(request_id, trace, check)
 
+        steering = (steering_matches(payload, self.config.get("deobfuscate", True))
+                    if mode != "model_only" and self.config.get("prompt_injection_rules", True) else [])
+        if steering:
+            check = result("BLOCK", "prompt_guard", "PROMPT_INJECTION_STEERING",
+                           security_alert=True, steering=steering)
+            trace.append(check)
+            return self.finish(request_id, trace, check)
+
         guard = ({"label": "BENIGN", "skipped_ablation": True} if mode == "model_only"
                  else self.prompt_guard(payload, request_id, "transaction"))
-        if guard["label"] == "MALICIOUS":
+        # tiered: consenso dos detectores bloqueia, um detector só põe em quarentena;
+        # block: qualquer alerta bloqueia; quarantine: nunca bloqueia.
+        action = self.config.get("prompt_guard_action", "tiered")
+        blocking = {"tiered": ("MALICIOUS",), "block": ("MALICIOUS", "SUSPICIOUS")}.get(action, ())
+        if guard["label"] in blocking:
+            guard.pop("flagged_texts", None)
+            # Dado que tenta manipular o verificador é sinal de má-fé, mesmo com a transação certa.
             check = result("BLOCK", "prompt_guard", "PROMPT_INJECTION_DETECTED",
                            security_alert=True, prompt_guard=guard)
             trace.append(check)
             return self.finish(request_id, trace, check)
-        trace.append(result("ALLOW", "prompt_guard", "NO_PROMPT_INJECTION", prompt_guard=guard))
+        if guard["label"] in ("MALICIOUS", "SUSPICIOUS"):
+            # Texto não confiável não decide a transação: sai da entrada da IA e segue o pipeline.
+            payload, quarantined = self.quarantine(payload, guard)
+            guard.pop("flagged_texts", None)
+            trace.append(result("ALLOW", "prompt_guard", "PROMPT_INJECTION_QUARANTINED",
+                                security_alert=True, prompt_guard=guard, quarantined=quarantined))
+        else:
+            guard.pop("flagged_texts", None)
+            trace.append(result("ALLOW", "prompt_guard", "NO_PROMPT_INJECTION", prompt_guard=guard))
 
-        evidence = payload.get("evidence")
+        # Texto livre (nomes, descrições, notas) não muda o efeito da transação: por padrão a IA
+        # recebe só os campos estruturados, então nenhuma injection não detectada chega até ela.
+        llm_payload, omitted = ((replace_texts(payload, set(free_texts(payload)), OMITTED_MARK))
+                                if self.config.get("llm_free_text", "omit") == "omit" else (payload, []))
+        evidence = llm_payload.get("evidence")
         if evidence is None:
-            scenario = payload.get("scenario")
-            evidence = {"scenario": scenario} if isinstance(scenario, dict) else payload
+            scenario = llm_payload.get("scenario")
+            evidence = {"scenario": scenario} if isinstance(scenario, dict) else llm_payload
         conflicts = (self.solana_policy(payload)
                      if mode != "model_only" and str(payload.get("chain", "")).lower() == "solana" else [])
         if conflicts:
@@ -256,6 +459,8 @@ class VetoPipeline:
         if mode == "model_only" and check.get("model_decision") in ("ALLOW", "BLOCK", "REVIEW"):
             check["decision"] = check["model_decision"]
             check["policy_override"] = "ABLATION_OVERRIDES_DISABLED"
+        if omitted:
+            check["omitted_text_fields"] = [path for path, _ in omitted]
         trace.append(check)
         if check.get("decision") in ("BLOCK", "REVIEW", "ERROR", "INVALID"):
             return self.finish(request_id, trace, check)
@@ -269,7 +474,9 @@ class VetoPipeline:
 
     def run_agent(self, payload, request_id):
         guard = self.prompt_guard(payload, request_id, "agent")
-        if guard["label"] == "MALICIOUS":
+        guard.pop("flagged_texts", None)
+        # No agente o detector é a única barreira: basta um detector acima do limite de bloqueio.
+        if guard["label"] == "MALICIOUS" or guard.get("malicious_score", 0) >= guard.get("block_threshold", 2):
             check = result("BLOCK", "prompt_guard", "PROMPT_INJECTION_DETECTED",
                            security_alert=True, message="Prompt injection detectado; chamada da IA bloqueada.",
                            prompt_guard=guard)
@@ -284,7 +491,7 @@ class VetoPipeline:
         return {"request_id": request_id, "decision": decision,
                 "blocked": decision == "BLOCK",
                 "blocked_by": final.get("layer") if decision == "BLOCK" else None,
-                "security_alert": bool(final.get("security_alert")),
+                "security_alert": any(layer.get("security_alert") for layer in trace),
                 "layers": trace}
 
 
@@ -362,12 +569,13 @@ ADMIN_HTML = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><m
 :root{color-scheme:dark}*{box-sizing:border-box}body{font:14px system-ui;margin:0;background:#0b1020;color:#e8edf7}.wrap{max-width:1500px;margin:auto;padding:24px}h1,h2{margin:0 0 8px}.muted{color:#8fa0bd}.tabs{display:flex;gap:8px;margin:22px 0}.tabs button.active{background:#6386ed}.view{display:none}.view.active{display:block}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:18px 0}.card,.panel,table{background:#121a2e;border:1px solid #26324b;border-radius:10px}.card,.panel{padding:16px}.value{font-size:26px;font-weight:700;margin-top:5px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px;margin:14px 0}table{width:100%;border-collapse:collapse;overflow:hidden}th,td{text-align:left;padding:9px;border-bottom:1px solid #26324b;vertical-align:top}th{color:#9eafd0}.ALLOW{color:#5ee09a}.BLOCK{color:#ff7185}.REVIEW,.ERROR,.INVALID{color:#ffc766}button{background:#3662e3;color:white;border:0;border-radius:7px;padding:8px 12px;cursor:pointer}.bar{height:9px;background:#26324b;border-radius:6px;overflow:hidden;margin-top:5px}.bar i{display:block;height:100%;background:#6386ed}details{border-bottom:1px solid #26324b;padding:9px 0}pre{white-space:pre-wrap;word-break:break-word;color:#c7d2e8}.empty{padding:30px;text-align:center;color:#8fa0bd}
 </style></head><body><div class="wrap"><h1>VETO Admin</h1><div class="muted">Monitoramento local da API e benchmark Solana</div><div class="tabs"><button id="tab-requests" class="active" onclick="show('requests')">Requisições</button><button id="tab-report" onclick="show('report')">Dashboard do relatório</button></div>
 <section id="view-requests" class="view active"><div class="cards"><div class="card">Requisições recentes<div class="value" id="total">0</div></div><div class="card">Latência média<div class="value" id="avg">0 ms</div></div><div class="card">Latência máxima<div class="value" id="max">0 ms</div></div><div class="card">Bloqueadas<div class="value BLOCK" id="blocked">0</div></div></div><p><button onclick="loadRequests()">Atualizar</button> <span id="request-status" class="muted"></span></p><table><thead><tr><th>Horário</th><th>ID</th><th>Rota</th><th>Decisão</th><th>Bloqueada por</th><th>Latência</th><th>Camadas executadas</th></tr></thead><tbody id="rows"></tbody></table></section>
-<section id="view-report" class="view"><p><button onclick="loadReport()">Atualizar relatório</button> <span id="report-status" class="muted"></span></p><div id="report-content"><div class="empty">Execute 09_SIMULAR_ATAQUES_SOLANA.bat para gerar o relatório.</div></div></section></div><script>
+<section id="view-report" class="view"><p><button onclick="loadReport()">Atualizar relatório</button> <button onclick="printReport()">Imprimir / salvar PDF</button> <a href="/admin/relatorio" target="_blank">Abrir em nova aba</a> <span id="report-status" class="muted"></span></p><iframe id="report-frame" title="Relatório Solana" style="width:100%;height:80vh;border:1px solid #ccc;border-radius:8px;background:#fff"></iframe></section></div><script>
 const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function show(name){for(const n of ['requests','report']){$('view-'+n).classList.toggle('active',n===name);$('tab-'+n).classList.toggle('active',n===name)}if(name==='report')loadReport()}
 async function loadRequests(){try{const d=await fetch('/admin/requests?limit=200',{cache:'no-store'}).then(r=>r.json());$('total').textContent=d.summary.total;$('avg').textContent=d.summary.average_latency_ms+' ms';$('max').textContent=d.summary.max_latency_ms+' ms';$('blocked').textContent=d.summary.blocked;$('rows').innerHTML=d.requests.map(x=>`<tr><td>${esc(x.timestamp)}</td><td>${esc(x.request_id)}</td><td>${esc(x.route)}</td><td class="${esc(x.decision)}">${esc(x.decision)}</td><td>${esc(x.blocked_by||'-')}</td><td>${esc(x.latency_ms)} ms</td><td>${esc((x.layers||[]).map(y=>y.layer+':'+y.decision).join(' → '))}</td></tr>`).join('');$('request-status').textContent='Atualizado '+new Date().toLocaleTimeString()}catch(e){$('request-status').textContent='Falha: '+e}}
 function card(label,value,cls=''){return `<div class="card">${esc(label)}<div class="value ${cls}">${esc(value)}</div></div>`}function tableRows(obj,total){return Object.entries(obj||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td><td><div class="bar"><i style="width:${total?Math.min(100,v/total*100):0}%"></i></div></td></tr>`).join('')}
-async function loadReport(){try{const r=await fetch('/admin/report',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||r.status);const f=d.funnel||{},det=d.attack_detection||{},m=d.metrics||{},raw=m.raw_model||{};$('report-content').innerHTML=`<div class="cards">${card('Casos',d.cases)}${card('Pipeline',d.accuracy==null?'-':(d.accuracy*100).toFixed(1)+'%')}${card('IA bruta',raw.accuracy==null?'-':(raw.accuracy*100).toFixed(1)+'%')}${card('Ataques bloqueados',(det.blocked||0)+' / '+(det.attacks||0),'BLOCK')}${card('Chegaram à simulação',f.reached_simulation||0)}</div><div class="grid"><div class="panel"><h2>Funil por camada</h2><table>${tableRows(f,d.cases)}</table></div><div class="panel"><h2>Atribuição por componente</h2><table>${tableRows(m.component_attribution||d.blocked_by,d.cases)}</table></div><div class="panel"><h2>Development x holdout</h2>${details(Object.entries(m.by_split||{}).map(([split,value])=>({case_id:split,...value})))}</div><div class="panel"><h2>Overrides e baselines</h2><pre>${esc(JSON.stringify({overrides:m.policy_overrides,baselines:m.baselines},null,2))}</pre></div></div><div class="panel"><h2>Resultado por tipo de ataque</h2><table><thead><tr><th>Tipo</th><th>Total</th><th>Esperado</th><th>Obtido</th><th>Bloqueado por</th></tr></thead><tbody>${Object.entries(d.by_attack_type||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v.total}</td><td>${esc(JSON.stringify(v.expected))}</td><td>${esc(JSON.stringify(v.actual))}</td><td>${esc(JSON.stringify(v.blocked_by))}</td></tr>`).join('')}</tbody></table></div><div class="grid"><div class="panel"><h2>Detecções da IA/política (${(d.ai_detections||[]).length})</h2>${details(d.ai_detections)}</div><div class="panel"><h2>Detecções do Prompt Guard (${(d.prompt_guard_detections||[]).length})</h2>${details(d.prompt_guard_detections)}</div></div><div class="panel"><h2>Ataques não bloqueados</h2>${(det.missed||[]).length?`<pre>${esc(det.missed.join('\\n'))}</pre>`:'<span class="ALLOW">Nenhum</span>'}</div>`;$('report-status').textContent='Seed '+esc(d.generation?.seed||'-')+' · modo '+esc(d.generation?.ablation_mode||'full')+' · '+esc(d.generated_at||'-')}catch(e){$('report-content').innerHTML='<div class="empty">Relatório ainda indisponível. Execute 09_SIMULAR_ATAQUES_SOLANA.bat.</div>';$('report-status').textContent='Falha: '+e}}
+function loadReport(){$('report-frame').src='/admin/relatorio?t='+Date.now();$('report-status').textContent='Atualizado '+new Date().toLocaleTimeString()}
+function printReport(){const f=$('report-frame');if(f.contentWindow)f.contentWindow.print()}
 function details(items){return (items||[]).length?(items||[]).map(x=>`<details><summary>${esc(x.case_id)} · ${esc(x.attack_type)}</summary><pre>${esc(JSON.stringify(x,null,2))}</pre></details>`).join(''):'<div class="muted">Nenhum registro.</div>'}
 loadRequests();setInterval(loadRequests,2000);
 </script></body></html>"""
@@ -427,6 +635,16 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self.reply(400, {"error": "limit deve ser inteiro"})
             return self.reply(200, recent_audit(limit))
+        if route == "/admin/relatorio":
+            from .solana_attack_simulator import OUT, detailed_report
+            from .solana_html_report import build_html
+            if not OUT.exists():
+                return self.reply(404, {"error": "relatório Solana ainda não foi gerado"})
+            rows = [json.loads(line) for line in OUT.read_text(encoding="utf-8").splitlines() if line.strip()]
+            data = build_html(rows, detailed_report(rows, (solana_report() or {}).get("generation"))).encode("utf-8")
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            return
         if route == "/admin/report":
             report = solana_report()
             if report is None:
@@ -484,14 +702,15 @@ def main():
     parser = argparse.ArgumentParser(description="API unica do pipeline VETO")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8070)
-    parser.add_argument("--guard-model", default=str(ROOT / "models" / "Llama-Prompt-Guard-2-86M"))
-    parser.add_argument("--guard-threshold", type=float, default=0.9)
+    parser.add_argument("--guard-model", action="append", default=None,
+                        help="pasta de um detector; repita para vários (padrão: prompt_guard_models do settings)")
+    parser.add_argument("--guard-threshold", type=float, default=CONF.get("prompt_guard_threshold", 0.9))
     parser.add_argument("--blacklist", default=None)
     args = parser.parse_args()
     GUARD_SERVER = guard_server
     GUARD_SERVER.THRESHOLD = args.guard_threshold
-    GUARD_SERVER.TOKENIZER = GUARD_SERVER.AutoTokenizer.from_pretrained(args.guard_model, local_files_only=True)
-    GUARD_SERVER.MODEL = GUARD_SERVER.AutoModelForSequenceClassification.from_pretrained(args.guard_model, local_files_only=True).eval()
+    device, names = GUARD_SERVER.load_models(args.guard_model or CONF.get("prompt_guard_models", GUARD_SERVER.DEFAULT_MODELS))
+    print(f"Detectores anti-injection em {device}: {', '.join(names)}", flush=True)
     PIPELINE = VetoPipeline(blacklist_path=args.blacklist)
     print(f"VETO API pronta em http://{args.host}:{args.port}", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()

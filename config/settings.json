@@ -1,6 +1,13 @@
 {
   "llm_url": "http://127.0.0.1:18080/v1/chat/completions",
   "prompt_guard_url": "http://127.0.0.1:8090/scan",
+  "prompt_guard_action": "tiered",
+  "prompt_guard_models": ["models/Llama-Prompt-Guard-2-86M", "models/PIGuard"],
+  "prompt_guard_block_threshold": 0.995,
+  "prompt_injection_rules": true,
+  "prompt_guard_threshold": 0.96,
+  "deobfuscate": true,
+  "llm_free_text": "omit",
   "blacklist_path": "config/blacklist.json",
   "anvil_rpc_url": "http://127.0.0.1:8545",
   "anvil_timeout_seconds": 30,
@@ -12,6 +19,7 @@
     "mainnet": "https://api.mainnet.solana.com"
   },
   "solana_timeout_seconds": 30,
+  "sol_usd_price": null,
   "seed": 42,
   "synthetic_count": 600,
   "max_historical": 80,
