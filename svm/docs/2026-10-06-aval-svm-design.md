@@ -142,7 +142,7 @@ extra top-level field that strict parsers ignore:
           "cache": { "hits": 11, "misses": 2 }, "elapsedUs": 4210 }
 ```
 
-`getMultipleAccounts` with an explicit `encoding: "base64"` and no `dataSlice`/`minContextSlot` is served from the cache (≤ 100 keys, context slot = cache slot, so it aligns with `simulateTransaction`); other shapes are proxied.
+`getMultipleAccounts` with an explicit `encoding: "base64"`, no `dataSlice`/`minContextSlot` and 1–100 keys is served from the same cache as `simulateTransaction` (context slot = the newest cached slot among the requested keys), so it is usually the simulation's slot — not guaranteed: the slot covers only the requested keys, and concurrent cold misses are fetched separately. Other shapes (including an empty key list) are proxied.
 
 All other methods (`getFeeForMessage`, `getLatestBlockhash`, `getAccountInfo`,
 …) are proxied unchanged.
