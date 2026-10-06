@@ -139,7 +139,16 @@ pub fn run_in(svm: &mut LiteSVM, loaded: &mut Loaded, input: SimInput) -> Result
                 if !stale_program && loaded.get(&k) == Some(&fp) {
                     continue;
                 }
-                svm.set_account(k, a).map_err(|_| SimError::UnsupportedProgram(k))?;
+                let pd = programdata_of(&a);
+                if svm.set_account(k, a).is_err() {
+                    // Forget both halves of a program that failed to load, so every later
+                    // request sets them again instead of running the VM's older ELF.
+                    loaded.remove(&k);
+                    if let Some(pd) = pd {
+                        loaded.remove(&pd);
+                    }
+                    return Err(SimError::UnsupportedProgram(k));
+                }
                 loaded.insert(k, fp);
                 reset.insert(k);
             }
@@ -477,6 +486,33 @@ mod tests {
         assert_eq!(svm.get_account(&pd).unwrap().data[4..12], 2u64.to_le_bytes());
         assert_ne!(v2.logs, v1.logs, "the upgraded program must run: {:?}", v2.logs);
         assert!(v2.err.is_some(), "the ATA program rejects a memo instruction: {:?}", v2.logs);
+    }
+
+    #[test]
+    fn failed_upgrade_never_falls_back_to_the_old_elf() {
+        let (mut svm, mut loaded) = (new_vm(), HashMap::new());
+        let memo = svm.get_account(&"MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr".parse().unwrap()).unwrap().data;
+        let garbage = vec![0xABu8; 4096];
+        let (prog, pd) = (key(60), key(61));
+        let slot = svm.get_sysvar::<Clock>().slot + 10;
+        let run = |svm: &mut LiteSVM, loaded: &mut Loaded, elf: &[u8], deployed: u64| {
+            let mut accounts = vec![(key(1), Some(wallet(10_000_000_000)))];
+            accounts.extend(upgradeable(prog, pd, elf, deployed));
+            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot })
+        };
+        let v1 = run(&mut svm, &mut loaded, &memo, 1).unwrap();
+        assert!(v1.err.is_none(), "memo v1 must run: {:?}", v1.logs);
+        // Upgrade to bytes that cannot load: unsupported, and stays unsupported.
+        for attempt in 2..=3 {
+            match run(&mut svm, &mut loaded, &garbage, 2) {
+                Err(SimError::UnsupportedProgram(k)) => assert_eq!(k, prog),
+                other => panic!("attempt {attempt}: expected UnsupportedProgram, got {other:?}"),
+            }
+        }
+        assert!(!loaded.contains_key(&prog) && !loaded.contains_key(&pd), "failed program left in loaded: {loaded:?}");
+        // A loadable version appears again: it runs.
+        let v3 = run(&mut svm, &mut loaded, &memo, 3).unwrap();
+        assert!(v3.err.is_none(), "{:?}", v3.logs);
     }
 
     #[tokio::test]
