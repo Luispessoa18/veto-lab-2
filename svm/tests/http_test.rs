@@ -218,3 +218,13 @@ async fn get_multiple_accounts_other_shapes_are_proxied() {
         assert_eq!(out["result"]["value"][0], "upstream", "{config} must be proxied: {out}");
     }
 }
+
+#[tokio::test]
+async fn get_multiple_accounts_with_no_keys_is_proxied() {
+    // No key means no cache slot to report: upstream answers it.
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)
+        .set_body_json(json!({"jsonrpc": "2.0", "id": 9, "result": {"context": {"slot": 1234}, "value": []}}))).mount(&server).await;
+    let out = post(app(&server.uri()).await, "/", gma(vec![], json!({"encoding": "base64"}))).await;
+    assert_eq!(out["result"]["context"]["slot"], 1234, "{out}");
+}

@@ -119,11 +119,13 @@ pub async fn simulate_result<S: AccountSource>(engine: &Engine<S>, params: &Valu
 const MAX_MULTIPLE_ACCOUNTS: usize = 100;
 
 /// `getMultipleAccounts` is answered from the cache only for an explicit `encoding: "base64"`
-/// with no `dataSlice`/`minContextSlot`, so its context slot lines up with simulateTransaction's
+/// with no `dataSlice`/`minContextSlot` and at least one key, so its context slot lines up with simulateTransaction's
 /// state slot. Every other shape goes upstream unchanged.
 fn served_locally(params: &Value) -> bool {
     let Some(config) = params.get(1).and_then(Value::as_object) else { return false };
-    config.get("encoding").and_then(Value::as_str) == Some("base64")
+    // No keys means no cache slot to report.
+    params.get(0).and_then(Value::as_array).is_some_and(|keys| !keys.is_empty())
+        && config.get("encoding").and_then(Value::as_str) == Some("base64")
         && !config.contains_key("dataSlice")
         && !config.contains_key("minContextSlot")
 }
