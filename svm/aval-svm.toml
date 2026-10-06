@@ -1,0 +1,12 @@
+# aval-svm — defaults shown. AVAL_UPSTREAM_URL / AVAL_LISTEN override.
+listen = "127.0.0.1:8899"
+upstream_url = "https://api.devnet.solana.com"
+commitment = "confirmed"
+cache_ttl_ms = 2000
+# Programs / ProgramData are refetched after this, so upgrades are picked up.
+program_ttl_ms = 60000
+recycle_after = 5000
+upstream_timeout_ms = 10000
+# Mainnet DeFi programs worth pinning at boot (only when upstream is mainnet):
+# preload_programs = ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"]
+preload_programs = []

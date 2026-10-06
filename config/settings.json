@@ -11,6 +11,9 @@
     "testnet": "https://api.testnet.solana.com",
     "mainnet": "https://api.mainnet.solana.com"
   },
+  "aval_svm_url": "http://127.0.0.1:8899",
+  "aval_svm_cluster": "devnet",
+  "aval_svm_timeout_seconds": 12,
   "solana_timeout_seconds": 30,
   "seed": 42,
   "synthetic_count": 600,

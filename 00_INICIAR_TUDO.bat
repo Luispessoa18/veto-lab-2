@@ -34,6 +34,13 @@ if defined ANVIL_EXE (
   start "VETO - Anvil" /min "%ANVIL_EXE%" --host 127.0.0.1 --port 8545
 )
 
+if exist "svm\target\release\aval-svm.exe" (
+  echo Iniciando aval-svm ^(simulacao Solana local^) na porta 8899...
+  start "VETO - aval-svm" /min "svm\target\release\aval-svm.exe" serve --config svm\aval-svm.toml
+) else (
+  echo [AVISO] aval-svm nao compilado ^(cd svm ^&^& cargo build --release^). Usando RPC publico.
+)
+
 echo Iniciando API e Prompt Guard na porta 8070...
 start "VETO - API + Prompt Guard" /min "%PY%" -m src.unified_api --host 127.0.0.1 --port 8070
 

@@ -18,3 +18,8 @@ external/
 __pycache__/
 *.pyc
 results/tmp*/
+
+# Rust (aval-svm)
+svm/target/
+results/aval_shadow.jsonl
+results/aval-svm.log
