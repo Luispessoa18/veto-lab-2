@@ -125,7 +125,7 @@ pub fn run_in(svm: &mut LiteSVM, loaded: &mut Loaded, input: SimInput) -> Result
         svm.set_sysvar(&rent);
     }
 
-    // ProgramData set again in this request (vm_order puts it before its program).
+    // ProgramData set again (or gone) in this request (vm_order puts it before its program).
     let mut reset: HashSet<Address> = HashSet::new();
     for (k, acct) in vm_order(input.accounts) {
         match acct {
@@ -152,12 +152,18 @@ pub fn run_in(svm: &mut LiteSVM, loaded: &mut Loaded, input: SimInput) -> Result
                 loaded.insert(k, fp);
                 reset.insert(k);
             }
+            // A ProgramData that stopped being one (closed, reassigned) marks its program for
+            // reset, so the VM drops the cached ELF instead of running it.
             Some(a) => {
-                loaded.remove(&k);
+                if loaded.remove(&k).is_some() {
+                    reset.insert(k);
+                }
                 svm.set_account(k, a).map_err(|_| SimError::UnsupportedProgram(k))?;
             }
             None => {
-                loaded.remove(&k);
+                if loaded.remove(&k).is_some() {
+                    reset.insert(k);
+                }
                 // Absent upstream. Never wipe a program the VM ships with.
                 if svm.get_account(&k).is_some_and(|a| a.executable) {
                     continue;
@@ -513,6 +519,38 @@ mod tests {
         // A loadable version appears again: it runs.
         let v3 = run(&mut svm, &mut loaded, &memo, 3).unwrap();
         assert!(v3.err.is_none(), "{:?}", v3.logs);
+    }
+
+    #[test]
+    fn closed_program_never_runs_the_old_elf() {
+        let (mut svm, mut loaded) = (new_vm(), HashMap::new());
+        let memo = svm.get_account(&"MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr".parse().unwrap()).unwrap().data;
+        let (prog, pd) = (key(70), key(71));
+        let slot = svm.get_sysvar::<Clock>().slot + 10;
+        let live = upgradeable(prog, pd, &memo, 1);
+        let program_account = live[1].1.clone();
+        let run = |svm: &mut LiteSVM, loaded: &mut Loaded, mut accounts: Vec<(Address, Option<Account>)>| {
+            accounts.push((key(1), Some(wallet(10_000_000_000))));
+            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot })
+        };
+        let v1 = run(&mut svm, &mut loaded, live).unwrap();
+        assert!(v1.err.is_none(), "{:?}", v1.logs);
+        // Closed on chain: ProgramData is gone (absent), or reassigned to a plain account.
+        let plain = Account { lamports: 1, owner: system_program::id(), ..Account::default() };
+        for gone in [None, Some(plain)] {
+            let r = run(&mut svm, &mut loaded, vec![(pd, gone.clone()), (prog, program_account.clone())]);
+            match (&gone, r) {
+                // Absent: the program becomes a closed tombstone and the invocation fails.
+                (None, Ok(out)) => assert_eq!(out.err, Some(TransactionError::InstructionError(0,
+                    solana_instruction::error::InstructionError::UnsupportedProgramId)), "{:?}", out.logs),
+                // Reassigned: the program cannot load at all.
+                (Some(_), Err(SimError::UnsupportedProgram(k))) => assert_eq!(k, prog),
+                (g, other) => panic!("closed program ({g:?}) must not run the old ELF: {other:?}"),
+            }
+            // Restore a live program so the next case starts from a cached ELF.
+            let v = run(&mut svm, &mut loaded, upgradeable(prog, pd, &memo, 1)).unwrap();
+            assert!(v.err.is_none(), "{:?}", v.logs);
+        }
     }
 
     #[tokio::test]
