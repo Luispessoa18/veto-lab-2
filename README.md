@@ -152,6 +152,8 @@ cd svm && cargo build --release && cd ..
   dono/delegate e contas criadas/fechadas.
 - Toda resposta traz `aval.digest` (sha256 da mensagem, igual ao `messageDigest` do VETO) e
   o slot do estado usado.
+- `getMultipleAccounts` com `encoding: "base64"` (sem `dataSlice`/`minContextSlot`) sai do mesmo
+  cache da simulação, com o mesmo slot; outras formas vão para o upstream.
 - Upstream: `AVAL_UPSTREAM_URL` (padrão devnet). Para mainnet use um RPC próprio (Helius etc.).
 - Medir contra o RPC: `aval-svm shadow --upstream <url> --count 200`.
 - Usa o `Clock` e o `EpochSchedule` do cluster, e verifica os precompiles ed25519/secp256k1.

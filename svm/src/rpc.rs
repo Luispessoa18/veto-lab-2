@@ -115,6 +115,32 @@ pub async fn simulate_result<S: AccountSource>(engine: &Engine<S>, params: &Valu
     Ok(json!({"context": {"slot": report.slot}, "value": value, "aval": aval_meta(&report)}))
 }
 
+/// Most keys one getMultipleAccounts may ask for (Solana RPC limit).
+const MAX_MULTIPLE_ACCOUNTS: usize = 100;
+
+/// `getMultipleAccounts` is answered from the cache only for an explicit `encoding: "base64"`
+/// with no `dataSlice`/`minContextSlot`, so its context slot lines up with simulateTransaction's
+/// state slot. Every other shape goes upstream unchanged.
+fn served_locally(params: &Value) -> bool {
+    let Some(config) = params.get(1).and_then(Value::as_object) else { return false };
+    config.get("encoding").and_then(Value::as_str) == Some("base64")
+        && !config.contains_key("dataSlice")
+        && !config.contains_key("minContextSlot")
+}
+
+/// The `result` of getMultipleAccounts (base64), shaped like Solana RPC, from the cache.
+pub async fn multiple_accounts_result<S: AccountSource>(engine: &Engine<S>, params: &Value) -> Result<Value, RpcError> {
+    let list = params.get(0).and_then(Value::as_array).ok_or_else(|| invalid("params[0] must be an array of addresses"))?;
+    if list.len() > MAX_MULTIPLE_ACCOUNTS {
+        return Err(invalid(format!("Too many inputs provided; max {MAX_MULTIPLE_ACCOUNTS}")));
+    }
+    let keys: Vec<Address> = list.iter().map(|a| a.as_str().and_then(|s| Address::from_str(s).ok()).ok_or_else(|| invalid("bad address")))
+        .collect::<Result<_, _>>()?;
+    let got = engine.cache().get_many(&keys, false).await.map_err(|e| RpcError { code: -32005, message: e.to_string() })?;
+    let value: Vec<Value> = keys.iter().map(|k| got.accounts.get(k).and_then(|a| a.as_ref()).map_or(Value::Null, ui_account)).collect();
+    Ok(json!({"context": {"slot": got.slot}, "value": value}))
+}
+
 async fn handle_one<S: AccountSource>(engine: &Engine<S>, upstream: &Upstream, req: Value) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let error = |code: i64, message: String| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}});
@@ -123,6 +149,12 @@ async fn handle_one<S: AccountSource>(engine: &Engine<S>, upstream: &Upstream, r
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(e) => error(e.code, e.message),
         },
+        Some("getMultipleAccounts") if served_locally(req.get("params").unwrap_or(&Value::Null)) => {
+            match multiple_accounts_result(engine, &req["params"]).await {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Err(e) => error(e.code, e.message),
+            }
+        }
         Some(_) => match upstream.forward(&req).await {
             Ok(reply) => reply,
             Err(e) => error(-32005, e.to_string()),

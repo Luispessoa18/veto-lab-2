@@ -163,3 +163,58 @@ async fn more_requested_accounts_than_the_message_has_is_invalid() {
     assert_eq!(out["error"]["code"], -32602);
     assert_eq!(out["error"]["message"], "Too many accounts provided");
 }
+
+fn gma(keys: Vec<String>, config: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": 9, "method": "getMultipleAccounts", "params": [keys, config]})
+}
+
+#[tokio::test]
+async fn get_multiple_accounts_base64_is_served_from_the_cache() {
+    // Upstream is unreachable: the answer can only come from the cache.
+    let out = post(app("http://127.0.0.1:9").await, "/", gma(vec![key(5).to_string(), key(6).to_string(), key(1).to_string()],
+        json!({"encoding": "base64", "commitment": "confirmed"}))).await;
+    assert_eq!(out["id"], 9);
+    assert_eq!(out["result"]["context"], json!({"slot": 900}), "{out}");
+    let v = &out["result"]["value"];
+    assert_eq!(v[0], json!({"lamports": 777, "owner": "11111111111111111111111111111111", "data": ["", "base64"],
+        "executable": false, "rentEpoch": 0, "space": 0}));
+    assert!(v[1].is_null(), "absent account is null");
+    assert_eq!(v[2]["lamports"], 10_000_000_000u64);
+}
+
+#[tokio::test]
+async fn get_multiple_accounts_over_100_keys_is_invalid() {
+    let keys: Vec<String> = (0..101u8).map(|i| key(i).to_string()).collect();
+    let out = post(app("http://127.0.0.1:9").await, "/", gma(keys, json!({"encoding": "base64"}))).await;
+    assert_eq!(out["error"]["code"], -32602, "{out}");
+}
+
+#[tokio::test]
+async fn get_multiple_accounts_cache_failure_is_32005() {
+    // The proxy target answers fine; only the cache's source fails.
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)
+        .set_body_json(json!({"jsonrpc": "2.0", "id": 9, "result": {"context": {"slot": 1}, "value": [null]}}))).mount(&server).await;
+    let src = MemSource::new(900);
+    src.set_fail(true);
+    let engine = Engine::new(Cache::new(src, Duration::from_secs(60)), Pool::new(1, 100));
+    let a = router(Arc::new(App { engine, upstream: Upstream::new(&server.uri(), "confirmed", 2000) }));
+    let out = post(a, "/", gma(vec![key(5).to_string()], json!({"encoding": "base64"}))).await;
+    assert_eq!(out["error"]["code"], -32005, "{out}");
+}
+
+#[tokio::test]
+async fn get_multiple_accounts_other_shapes_are_proxied() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)
+        .set_body_json(json!({"jsonrpc": "2.0", "id": 9, "result": {"context": {"slot": 1}, "value": ["upstream"]}}))).mount(&server).await;
+    let a = app(&server.uri()).await;
+    let k = vec![key(5).to_string()];
+    for config in [Value::Null, json!({}), json!({"encoding": "base58"}), json!({"encoding": "jsonParsed"}),
+                   json!({"encoding": "base64", "dataSlice": {"offset": 0, "length": 1}}),
+                   json!({"encoding": "base64", "minContextSlot": 5})] {
+        let body = if config.is_null() { json!({"jsonrpc": "2.0", "id": 9, "method": "getMultipleAccounts", "params": [k]}) } else { gma(k.clone(), config.clone()) };
+        let out = post(a.clone(), "/", body).await;
+        assert_eq!(out["result"]["value"][0], "upstream", "{config} must be proxied: {out}");
+    }
+}
