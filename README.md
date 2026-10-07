@@ -124,6 +124,8 @@ anvil --host 127.0.0.1 --port 8545
 | `09_SIMULAR_ATAQUES_SOLANA.bat` | `.venv/bin/python -m src.solana_attack_simulator --api http://127.0.0.1:8070` |
 | testes | `.venv/bin/python -m unittest discover -s tests` |
 
+> **Guia passo a passo para configurar e testar:** [CONFIGURAR_AVAL.md](CONFIGURAR_AVAL.md)
+
 ## aval-svm — simulação Solana local (Rust)
 
 A camada `solana_simulation` roda as transações numa VM Solana local (LiteSVM) em vez de
@@ -165,6 +167,77 @@ cd svm && cargo build --release && cd ..
   do cluster — não assine transações com ele.
 
 Desenho: `svm/docs/2026-10-06-aval-svm-design.md`.
+
+## aval-registry — atestação on-chain dos vereditos
+
+O `aval-svm anchor` lê o arquivo de registros do VETO (JSONL, um veredito por linha), agrupa as
+linhas novas em lotes, calcula a raiz Merkle de cada lote e grava a raiz no programa Anchor
+`aval_registry` (`registry/`). O `aval-svm verify` prova que uma linha específica está sob uma
+raiz gravada na cadeia. Desenho: `svm/docs/2026-10-06-aval-registry-design.md`.
+
+**O que `VERIFIED` prova:** os bytes exatos da linha N do arquivo foram comprometidos como linha N
+pelo registry da authority X, no lote k, no slot S ou antes dele. Os lotes são contíguos, então
+uma linha ancorada não pode mudar e não existe buraco no meio.
+
+**O que `VERIFIED` NÃO prova:**
+
+- que o veredito está correto (só que ele não foi alterado depois);
+- que o horário gravado no próprio registro é verdadeiro (a prova só garante "até o slot S");
+- que todo veredito foi escrito no arquivo: o operador pode omitir vereditos ou deixar o final
+  do arquivo sem ancorar;
+- linhas ainda não ancoradas: podem ser alteradas dentro do `--interval-secs` (padrão 30 s) ou
+  enquanto o batcher estiver parado.
+
+Cuidados:
+
+- Sempre passe `--authority`. Sem ele o verificador confia no registry citado no arquivo de provas.
+- O verificador confia no RPC que consulta (leitura em commitment `finalized`).
+- As provas só existem em `<registros>.proofs.jsonl`: faça backup. O arquivo de registros deve
+  ser somente de acréscimo (append-only).
+- O programa é atualizável pela carteira local até ser finalizado
+  (`solana program set-upgrade-authority <programa> --final`, irreversível; **não foi feito**).
+- Custo: cerca de 0,0017 SOL de aluguel por lote em devnet (grátis na localnet).
+- Códigos de saída: `0` verificado, `1` NÃO verificado, `2` não deu para checar (erro de RPC, arquivo ou argumentos, ou `PENDING`: tente de novo).
+
+### Rodar na localnet (custo zero)
+
+Requer o Solana CLI (Agave). O script sobe um `solana-test-validator` na porta 8999, faz um airdrop
+de 2,5 SOL simulados e deixa o programa `5t75hMEMtV5rEN7BuRu3pQfyu2yUc5DVMBFqvdLxoZN5` (o `.so` e o id
+estão em `svm/tests/fixtures/`) carregado. Com o keypair do programa em `registry/target/deploy/`
+(nunca versionado) ele faz um `solana program deploy` de verdade; num clone limpo, sem esse keypair,
+carrega o programa no genesis com o mesmo id e a sua carteira como upgrade authority. Se
+`~/.config/solana/id.json` não existir, o script cria uma carteira nova (sem exibir a chave).
+`--demo-records` escreve `results/demo-records.jsonl` (10 linhas sintéticas) para os comandos abaixo:
+
+```bash
+registry/scripts/localnet.sh            # sobe o validador e publica o programa
+registry/scripts/localnet.sh --demo-records   # results/demo-records.jsonl
+export AVAL_REGISTRY_RPC=http://127.0.0.1:8999
+./svm/target/release/aval-svm anchor --records results/demo-records.jsonl \
+    --keypair ~/.config/solana/id.json --once
+./svm/target/release/aval-svm verify --records results/demo-records.jsonl --line 7 \
+    --authority $(solana-keygen pubkey ~/.config/solana/id.json)
+registry/scripts/localnet.sh --stop     # para o validador
+```
+
+A leitura do `verify` é `finalized`, que no validador local demora uns 15 s depois do `anchor`.
+Nesse intervalo ele imprime `PENDING: batch k is confirmed but not finalized yet — retry in ~15 s`
+e sai com código `2`: não é adulteração, só repetir o comando. `NOT VERIFIED: ... not found on chain`
+(código `1`) fica para o lote que não existe nem em `confirmed`.
+
+Saída real de uma execução (10 linhas sintéticas, depois mais 3):
+
+```text
+anchored batch 0: lines 0–9 (10 records) tx 4u6pFwmngi9DG35Yq53rnrboJQNURmDeLfH6e3FgmKHFM7ZheKTm1rubuTq9p3bEBj7TAB5MncCP87vLhX2u77Di
+VERIFIED line 7 — batch 0, slot 26, 2026-10-07T02:38:23Z, tx 4u6pFw…2u77Di, registry 5DUzCe7nW23RRWHzqvNHPs6V7biNP4eqEPbrj5YFxnGh (authority 3Q2guAHRjtUdhbTvvXzztpjEdFG8RpMm15fv6Lho4mzD)   # saída 0
+NOT VERIFIED: leaf mismatch: line 7 hashes to c09da1d0…, the proof entry has c3c7e96c…           # linha 7 adulterada numa cópia, saída 1
+NOT VERIFIED: proof entry names registry 5DUzCe7n…, but the registry of authority 5t75hMEM…(id do programa, errada) is EqktkaAX…   # saída 1
+anchored batch 1: lines 10–12 (3 records) tx 22srm8iGWSzzK6H7VEn34fwRVzRgvDrEoM4yXqcQnyPQmJEApxMrhwjoSs4FpHuyWiTEY4h4vRQrbWsUyBKDYwce
+VERIFIED line 11 — batch 1, slot 32, 2026-10-07T02:38:26Z, tx 22srm8…BKDYwce, registry 5DUzCe7nW23RRWHzqvNHPs6V7biNP4eqEPbrj5YFxnGh (authority 3Q2guAHRjtUdhbTvvXzztpjEdFG8RpMm15fv6Lho4mzD)   # saída 0
+```
+
+Os mesmos comandos funcionam na devnet com `AVAL_REGISTRY_RPC` sem definir (o padrão é a devnet);
+nesse caso é preciso ter SOL de devnet e fazer o deploy do programa lá.
 
 ## Avaliação adversarial
 
