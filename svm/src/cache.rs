@@ -13,7 +13,13 @@ pub const PROGRAM_TTL: Duration = Duration::from_secs(60);
 #[derive(Debug, Default, Clone)]
 pub struct Fetched {
     pub accounts: HashMap<Address, Option<Account>>,
+    /// Newest slot over every entry returned.
     pub slot: u64,
+    /// Oldest slot over the non-pinned entries returned (programs and ProgramData are
+    /// allowed to be older); equals `slot` when there are none.
+    pub min_slot: u64,
+    /// Oldest non-pinned slot seen; `None` until one is. Never defaulted to 0.
+    plain_min: Option<u64>,
     pub hits: usize,
     pub misses: usize,
 }
@@ -33,9 +39,22 @@ pub struct Cache<S> {
 }
 
 impl Fetched {
+    fn note_plain(&mut self, slot: u64) {
+        self.plain_min = Some(self.plain_min.map_or(slot, |m| m.min(slot)));
+    }
+
+    fn settle(&mut self) {
+        self.min_slot = self.plain_min.unwrap_or(self.slot);
+    }
+
     pub fn merge(&mut self, other: Fetched) {
         self.accounts.extend(other.accounts);
         self.slot = self.slot.max(other.slot);
+        self.plain_min = match (self.plain_min, other.plain_min) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        self.settle();
         self.hits += other.hits;
         self.misses += other.misses;
     }
@@ -76,6 +95,7 @@ impl<S: AccountSource> Cache<S> {
                     Some(e) if live(e) => {
                         out.accounts.insert(*k, e.account.clone());
                         out.slot = out.slot.max(e.slot);
+                        if !e.pinned { out.note_plain(e.slot); }
                         out.hits += 1;
                     }
                     _ => missing.push(*k),
@@ -83,6 +103,7 @@ impl<S: AccountSource> Cache<S> {
             }
         }
         if missing.is_empty() {
+            out.settle();
             return Ok(out);
         }
         let batches = missing.chunks(MAX_BATCH).map(|c| self.source.get_multiple(c));
@@ -92,11 +113,13 @@ impl<S: AccountSource> Cache<S> {
         for (chunk, (slot, accounts)) in missing.chunks(MAX_BATCH).zip(results) {
             for (k, account) in chunk.iter().zip(accounts) {
                 map.insert(*k, Entry { pinned: pin(&account), account: account.clone(), slot, at: now });
+                if !pin(&account) { out.note_plain(slot); }
                 out.accounts.insert(*k, account);
             }
             out.slot = out.slot.max(slot);
         }
         out.misses += missing.len();
+        out.settle();
         Ok(out)
     }
 }
@@ -178,5 +201,52 @@ mod tests {
         cache.source().set_fail(true);
         assert!(cache.get_many(&[key(1)], false).await.is_ok());
         assert!(matches!(cache.get_many(&[key(1), key(2)], false).await, Err(SourceError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn min_slot_spans_hit_and_miss_ignoring_pinned() {
+        let src = MemSource::new(10);
+        src.insert(key(1), lamports(5));
+        src.insert(key(3), Account { executable: true, ..lamports(1) });
+        let cache = Cache::new(src, Duration::from_secs(60));
+        let a = cache.get_many(&[key(1), key(3)], false).await.unwrap();
+        assert_eq!((a.min_slot, a.slot), (10, 10));
+        cache.source().set_slot(20);
+        // key(1) hit at 10, key(2) miss at 20, key(3) pinned hit at 10.
+        let b = cache.get_many(&[key(1), key(2), key(3)], false).await.unwrap();
+        assert_eq!((b.min_slot, b.slot), (10, 20));
+        let c = cache.get_many(&[key(3)], false).await.unwrap();
+        assert_eq!((c.min_slot, c.slot), (10, 10), "pinned only: min == max");
+    }
+
+    #[tokio::test]
+    async fn pinned_older_than_plain_does_not_lower_min() {
+        let src = MemSource::new(10);
+        src.insert(key(3), Account { executable: true, ..lamports(1) });
+        let cache = Cache::new(src, Duration::from_secs(60));
+        cache.get_many(&[key(3)], false).await.unwrap();
+        cache.source().set_slot(20);
+        let b = cache.get_many(&[key(3), key(4)], false).await.unwrap();
+        assert_eq!((b.min_slot, b.slot), (20, 20));
+    }
+
+    #[tokio::test]
+    async fn merge_with_all_pinned_side_does_not_drag_min_to_zero() {
+        let src = MemSource::new(10);
+        src.insert(key(1), lamports(5));
+        src.insert(key(3), Account { executable: true, ..lamports(1) });
+        let cache = Cache::new(src, Duration::from_secs(60));
+        let mut plain = cache.get_many(&[key(1)], false).await.unwrap();
+        plain.merge(cache.get_many(&[key(3)], false).await.unwrap());
+        assert_eq!(plain.min_slot, 10);
+        let mut pinned_first = cache.get_many(&[key(3)], false).await.unwrap();
+        pinned_first.merge(cache.get_many(&[key(1)], false).await.unwrap());
+        assert_eq!(pinned_first.min_slot, 10);
+        let mut empty = Fetched::default();
+        empty.merge(plain);
+        assert_eq!(empty.min_slot, 10);
+        let mut still_empty = Fetched::default();
+        still_empty.merge(Fetched::default());
+        assert_eq!(still_empty.min_slot, still_empty.slot);
     }
 }

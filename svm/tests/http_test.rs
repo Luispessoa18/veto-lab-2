@@ -43,6 +43,8 @@ async fn simulate_matches_rpc_shape_with_requested_accounts() {
     assert!(v["unitsConsumed"].as_u64().unwrap() > 0);
     assert!(v["replacementBlockhash"]["blockhash"].is_string());
     assert_eq!(out["result"]["aval"]["digest"].as_str().unwrap().len(), 64);
+    let aval = &out["result"]["aval"];
+    assert!(aval["stateSlotMin"].as_u64().unwrap() <= aval["stateSlot"].as_u64().unwrap(), "{out}");
 }
 
 #[tokio::test]

@@ -151,7 +151,8 @@ cd svm && cargo build --release && cd ..
 - `POST /v1/project` devolve a **projeção**: saldos SOL/tokens antes e depois, mudanças de
   dono/delegate e contas criadas/fechadas.
 - Toda resposta traz `aval.digest` (sha256 da mensagem, igual ao `messageDigest` do VETO) e
-  o slot do estado usado.
+  o slot do estado usado (`stateSlot`, o mais novo; `stateSlotMin`, o mais antigo entre as contas
+  que não são programas — iguais significa que o estado veio todo de um só slot).
 - `getMultipleAccounts` com `encoding: "base64"` (sem `dataSlice`/`minContextSlot`, com ao menos uma
   conta) sai do mesmo cache da simulação — em geral no mesmo slot dela, mas sem garantia; outras
   formas vão para o upstream.

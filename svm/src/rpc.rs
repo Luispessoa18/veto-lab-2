@@ -37,7 +37,7 @@ fn ui_inner(list: &InnerInstructionsList) -> Value {
 }
 
 pub fn aval_meta(r: &SimReport) -> Value {
-    json!({"digest": r.digest, "stateSlot": r.slot, "cache": {"hits": r.hits, "misses": r.misses}, "elapsedUs": r.elapsed_us})
+    json!({"digest": r.digest, "stateSlot": r.slot, "stateSlotMin": r.min_slot, "cache": {"hits": r.hits, "misses": r.misses}, "elapsedUs": r.elapsed_us})
 }
 
 /// Static keys plus every address loaded from lookup tables.

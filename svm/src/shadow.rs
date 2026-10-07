@@ -84,9 +84,9 @@ pub fn compare(ours: &Value, theirs: &Value) -> Vec<String> {
 /// Context slot of a simulateTransaction result, when present.
 fn context_slot(v: &Value) -> Option<u64> { v["context"]["slot"].as_u64() }
 
-/// True when both sides simulated at the same slot, so a disagreement cannot be slot skew.
-pub fn same_slot(upstream: Option<u64>, aval: Option<u64>) -> bool {
-    matches!((upstream, aval), (Some(a), Some(b)) if a == b)
+/// True when every aval read was at upstream's slot (newest and oldest), so a disagreement cannot be slot skew.
+pub fn same_slot(upstream: Option<u64>, aval: Option<u64>, aval_min: Option<u64>) -> bool {
+    matches!((upstream, aval, aval_min), (Some(a), Some(b), Some(c)) if a == b && a == c)
 }
 
 /// One line that keeps "agreed because both failed the same way" apart from real executions.
@@ -156,15 +156,16 @@ pub async fn run(upstream_url: &str, count: usize, slot: Option<u64>, out: &Path
         };
         let up_slot = theirs.as_ref().ok().and_then(context_slot);
         let av_slot = ours.as_ref().ok().and_then(context_slot);
+        let av_min = ours.as_ref().ok().and_then(|o| o["aval"]["stateSlotMin"].as_u64());
         if label == "disagree" {
-            if same_slot(up_slot, av_slot) { same_slot_dis += 1 } else { diff_slot_dis += 1 }
+            if same_slot(up_slot, av_slot, av_min) { same_slot_dis += 1 } else { diff_slot_dis += 1 }
         }
         writeln!(file, "{}", json!({"tx": &b64[..b64.len().min(24)], "result": label, "agree": label.starts_with("agree"), "diff": fields,
-            "upstreamSlot": up_slot, "avalSlot": av_slot}))?;
+            "upstreamSlot": up_slot, "avalSlot": av_slot, "avalSlotMin": av_min}))?;
     }
     for v in [&mut cold, &mut warm, &mut rpc] { v.sort(); }
     println!("slot {slot}: {}", summary(executed, same_failure, txs.len() - errored, errored));
-    println!("disagreements: {} at the same slot, {} at different slots", same_slot_dis, diff_slot_dis);
+    println!("disagreements: {} at the same slot (all reads), {} at different slots", same_slot_dis, diff_slot_dis);
     println!("aval cold  p50 {} µs  p95 {} µs", pct(&cold, 0.5), pct(&cold, 0.95));
     println!("aval warm  p50 {} µs  p95 {} µs", pct(&warm, 0.5), pct(&warm, 0.95));
     println!("rpc        p50 {} µs  p95 {} µs", pct(&rpc, 0.5), pct(&rpc, 0.95));
@@ -179,10 +180,12 @@ mod tests {
 
     #[test]
     fn same_slot_needs_both_equal() {
-        assert!(same_slot(Some(5), Some(5)));
-        assert!(!same_slot(Some(5), Some(6)));
-        assert!(!same_slot(None, Some(5)));
-        assert!(!same_slot(None, None));
+        assert!(same_slot(Some(5), Some(5), Some(5)));
+        assert!(!same_slot(Some(5), Some(6), Some(6)));
+        assert!(!same_slot(Some(5), Some(5), Some(4)), "an older read breaks it");
+        assert!(!same_slot(None, Some(5), Some(5)));
+        assert!(!same_slot(Some(5), Some(5), None));
+        assert!(!same_slot(None, None, None));
         assert_eq!(context_slot(&json!({"context": {"slot": 7}})), Some(7));
     }
 

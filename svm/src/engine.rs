@@ -17,6 +17,8 @@ pub struct SimReport {
     pub outcome: SimOutcome,
     pub pre: HashMap<Address, Option<Account>>,
     pub slot: u64,
+    /// Oldest slot among the non-pinned reads (see `Fetched::min_slot`).
+    pub min_slot: u64,
     pub hits: usize,
     pub misses: usize,
     pub elapsed_us: u64,
@@ -109,6 +111,7 @@ impl<S: AccountSource> Engine<S> {
             outcome,
             pre: got.accounts,
             slot: got.slot,
+            min_slot: got.min_slot,
             hits: got.hits,
             misses: got.misses,
             elapsed_us: started.elapsed().as_micros() as u64,

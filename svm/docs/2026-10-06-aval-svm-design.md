@@ -138,9 +138,13 @@ unitsConsumed, returnData, innerInstructions, replacementBlockhash}}` plus one
 extra top-level field that strict parsers ignore:
 
 ```json
-"aval": { "digest": "<64 hex>", "stateSlot": 312345678,
+"aval": { "digest": "<64 hex>", "stateSlot": 312345678, "stateSlotMin": 312345677,
           "cache": { "hits": 11, "misses": 2 }, "elapsedUs": 4210 }
 ```
+
+`stateSlot` is the newest slot of any read; `stateSlotMin` the oldest slot among non-program
+accounts (programs and ProgramData are cached longer and excluded), so equal values mean the
+whole state came from one slot.
 
 `getMultipleAccounts` with an explicit `encoding: "base64"`, no `dataSlice`/`minContextSlot` and 1–100 keys is served from the same cache as `simulateTransaction` (context slot = the newest cached slot among the requested keys), so it is usually the simulation's slot — not guaranteed: the slot covers only the requested keys, and concurrent cold misses are fetched separately. Other shapes (including an empty key list) are proxied.
 
@@ -163,7 +167,7 @@ Response:
                     "pre": "…", "post": "…" }],
     "closed": ["…"], "created": ["…"]
   },
-  "aval": { "digest": "<64 hex>", "stateSlot": 312345678,
+  "aval": { "digest": "<64 hex>", "stateSlot": 312345678, "stateSlotMin": 312345677,
             "cache": { "hits": 11, "misses": 2 }, "elapsedUs": 4210 }
 }
 ```

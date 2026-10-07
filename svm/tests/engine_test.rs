@@ -22,6 +22,7 @@ async fn simulates_and_reports_cache_and_digest() {
     let first = e.simulate(decode(&B64.encode(&raw), Encoding::Base64).unwrap(), false).await.unwrap();
     assert!(first.outcome.err.is_none(), "{:?}", first.outcome.logs);
     assert_eq!(first.slot, 500);
+    assert_eq!(first.min_slot, 500);
     assert!(first.misses > 0);
     assert_eq!(first.digest, aval_svm::decode::message_digest(&raw).unwrap());
     let second = e.simulate(decode(&B64.encode(&raw), Encoding::Base64).unwrap(), false).await.unwrap();

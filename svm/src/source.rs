@@ -2,7 +2,7 @@ use solana_account::Account;
 use solana_address::Address;
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -24,7 +24,7 @@ pub trait AccountSource: Send + Sync + 'static {
 /// In-memory source for tests and fixture replay. Not used by `serve`.
 pub struct MemSource {
     pub accounts: Mutex<HashMap<Address, Account>>,
-    pub slot: u64,
+    slot: AtomicU64,
     calls: AtomicUsize,
     pub batch_sizes: Mutex<Vec<usize>>,
     fail: AtomicBool,
@@ -32,13 +32,17 @@ pub struct MemSource {
 
 impl MemSource {
     pub fn new(slot: u64) -> Self {
-        MemSource { accounts: Mutex::default(), slot, calls: AtomicUsize::new(0), batch_sizes: Mutex::default(), fail: AtomicBool::new(false) }
+        MemSource { accounts: Mutex::default(), slot: AtomicU64::new(slot), calls: AtomicUsize::new(0), batch_sizes: Mutex::default(), fail: AtomicBool::new(false) }
     }
     pub fn insert(&self, k: Address, a: Account) {
         self.accounts.lock().unwrap().insert(k, a);
     }
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
+    }
+    /// Moves the slot later reads are reported at (tests).
+    pub fn set_slot(&self, slot: u64) {
+        self.slot.store(slot, Ordering::SeqCst);
     }
     pub fn set_fail(&self, fail: bool) {
         self.fail.store(fail, Ordering::SeqCst);
@@ -53,6 +57,6 @@ impl AccountSource for MemSource {
             return Err(SourceError::Unavailable("mem source set to fail".into()));
         }
         let map = self.accounts.lock().unwrap();
-        Ok((self.slot, keys.iter().map(|k| map.get(k).cloned()).collect()))
+        Ok((self.slot.load(Ordering::SeqCst), keys.iter().map(|k| map.get(k).cloned()).collect()))
     }
 }
