@@ -107,6 +107,8 @@ pub struct RpcChain {
     up: Upstream,
     poll: Duration,
     max_wait: Duration,
+    /// Commitment for account reads: "confirmed" for the batcher, "finalized" for `verify`.
+    read_commitment: &'static str,
 }
 
 impl RpcChain {
@@ -115,7 +117,13 @@ impl RpcChain {
     }
 
     pub fn with_timing(upstream: Upstream, poll: Duration, max_wait: Duration) -> Self {
-        RpcChain { up: upstream, poll, max_wait }
+        RpcChain { up: upstream, poll, max_wait, read_commitment: "confirmed" }
+    }
+
+    /// Reads accounts at `finalized` (what a verifier should rely on); sends still wait for `confirmed`.
+    pub fn finalized_reads(mut self) -> Self {
+        self.read_commitment = "finalized";
+        self
     }
 }
 
@@ -123,7 +131,7 @@ impl Chain for RpcChain {
     async fn account(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
         let v = self
             .up
-            .call("getAccountInfo", json!([key.to_string(), {"encoding": "base64", "commitment": "confirmed"}]))
+            .call("getAccountInfo", json!([key.to_string(), {"encoding": "base64", "commitment": self.read_commitment}]))
             .await
             .map_err(unavail)?;
         let value = &v["value"];
@@ -235,6 +243,21 @@ mod tests {
         let server = MockServer::start().await;
         mock(&server, "getAccountInfo", json!({"context": {"slot": 1}, "value": null})).await;
         assert_eq!(rpc(&server).account(&Address::from([1; 32])).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn rpc_reads_at_the_chosen_commitment() {
+        for (finalized, want) in [(false, "confirmed"), (true, "finalized")] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(body_partial_json(json!({"method": "getAccountInfo", "params": [Address::from([1; 32]).to_string(), {"commitment": want}]})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": {"context": {"slot": 1}, "value": null}})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let c = if finalized { rpc(&server).finalized_reads() } else { rpc(&server) };
+            assert_eq!(c.account(&Address::from([1; 32])).await.unwrap(), None);
+        }
     }
 
     #[tokio::test]
