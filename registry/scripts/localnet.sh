@@ -29,7 +29,7 @@ fi
 if [ "${1:-}" = "--stop" ]; then
   if [ -f "$PIDFILE" ]; then
     pid="$(cat "$PIDFILE")"
-    if [ "$(ps -p "$pid" -o comm= 2>/dev/null | xargs basename 2>/dev/null || true)" = "solana-test-validator" ]; then
+    if ps -p "$pid" -o args= 2>/dev/null | grep -q solana-test-validator; then
       kill "$pid"
       for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
       if kill -0 "$pid" 2>/dev/null; then echo "[ERRO] Validador (pid $pid) nao saiu em 10 s."; exit 1; fi
@@ -79,7 +79,9 @@ solana-test-validator --reset --quiet --ledger "$DIR" --rpc-port 8999 --faucet-p
 VPID=$!
 # Se algo falhar antes do pid ser gravado, nao deixa o validador orfao.
 cleanup() { kill "$VPID" 2>/dev/null || true; }
-trap cleanup INT TERM EXIT
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 for i in $(seq 1 60); do
   if solana cluster-version --url "$RPC" >/dev/null 2>&1; then break; fi
