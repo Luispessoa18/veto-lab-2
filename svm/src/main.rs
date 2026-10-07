@@ -46,7 +46,7 @@ enum Cmd {
         /// Solana CLI keypair file of the registry authority (never printed).
         #[arg(long)]
         keypair: PathBuf,
-        #[arg(long, default_value = DEFAULT_UPSTREAM)]
+        #[arg(long, env = "AVAL_REGISTRY_RPC", default_value = DEFAULT_UPSTREAM)]
         upstream: String,
         #[arg(long, default_value_t = 30)]
         interval_secs: u64,
@@ -65,7 +65,7 @@ enum Cmd {
         /// Defaults to <records>.proofs.jsonl.
         #[arg(long)]
         proofs: Option<PathBuf>,
-        #[arg(long, default_value = DEFAULT_UPSTREAM)]
+        #[arg(long, env = "AVAL_REGISTRY_RPC", default_value = DEFAULT_UPSTREAM)]
         upstream: String,
         /// Registry authority pubkey; pins the registry instead of trusting the proofs file.
         #[arg(long)]
@@ -200,11 +200,31 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::anchored_message;
+    use super::{anchored_message, Cli, Cmd, DEFAULT_UPSTREAM};
+    use clap::Parser;
 
     #[test]
     fn anchored_message_ends_on_the_last_line_inclusive() {
         assert_eq!(anchored_message(2, 5, 3, "SIG"), "anchored batch 2: lines 5–7 (3 records) tx SIG");
         assert_eq!(anchored_message(0, 0, 1, "SIG"), "anchored batch 0: lines 0–0 (1 records) tx SIG");
+    }
+
+    fn verify_upstream(args: &[&str]) -> String {
+        let mut a = vec!["aval-svm", "verify", "--records", "r.jsonl", "--line", "0"];
+        a.extend_from_slice(args);
+        match Cli::try_parse_from(a).unwrap().cmd {
+            Cmd::Verify { upstream, .. } => upstream,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn registry_rpc_comes_from_flag_then_env_then_default() {
+        std::env::remove_var("AVAL_REGISTRY_RPC");
+        assert_eq!(verify_upstream(&[]), DEFAULT_UPSTREAM);
+        std::env::set_var("AVAL_REGISTRY_RPC", "http://127.0.0.1:8999");
+        assert_eq!(verify_upstream(&[]), "http://127.0.0.1:8999");
+        assert_eq!(verify_upstream(&["--upstream", "http://x"]), "http://x");
+        std::env::remove_var("AVAL_REGISTRY_RPC");
     }
 }

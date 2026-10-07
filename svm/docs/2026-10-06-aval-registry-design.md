@@ -195,6 +195,17 @@ unreachable, bad arguments).
 4. Devnet: deploy, anchor a real VETO records file, verify one line; record
    program id and an explorer link in the README.
 
+## Deployment
+
+Localnet is the default target: `registry/scripts/localnet.sh` starts
+`solana-test-validator` on RPC port 8999 (ledger in `registry/.localnet/`,
+gitignored), airdrops simulated SOL to the wallet and deploys the committed
+`.so` under program id `5t75hMEMtV5rEN7BuRu3pQfyu2yUc5DVMBFqvdLxoZN5`
+(upgrade authority: the local wallet). `anchor` and `verify` read the RPC from
+`--upstream` or `AVAL_REGISTRY_RPC`; the default stays devnet, which remains an
+optional later step (it needs devnet SOL for rent). Note that `verify` reads at
+`finalized`, which lags the batcher's `confirmed` writes by ~15 s on localnet.
+
 ## Toolchain
 
 Solana CLI (Agave 4.x) and Anchor CLI 1.x (via `avm`) are required only to

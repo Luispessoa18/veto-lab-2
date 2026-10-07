@@ -24,9 +24,12 @@ results/tmp*/
 svm/target/
 results/aval_shadow.jsonl
 results/aval-svm.log
+results/demo-records.jsonl*
+results/demo-tampered.*
 
 # Anchor (aval-registry)
 registry/target/
 registry/.anchor/
+registry/.localnet/
 registry/node_modules/
 *-keypair.json
