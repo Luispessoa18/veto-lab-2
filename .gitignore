@@ -24,3 +24,9 @@ results/tmp*/
 svm/target/
 results/aval_shadow.jsonl
 results/aval-svm.log
+
+# Anchor (aval-registry)
+registry/target/
+registry/.anchor/
+registry/node_modules/
+*-keypair.json

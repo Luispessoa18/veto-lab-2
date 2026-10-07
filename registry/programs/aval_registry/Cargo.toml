@@ -1,0 +1,19 @@
+[package]
+name = "aval_registry"
+version = "0.1.0"
+edition = "2021"
+description = "Aval: append-only on-chain registry of verdict batch roots"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "aval_registry"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "1.2"
