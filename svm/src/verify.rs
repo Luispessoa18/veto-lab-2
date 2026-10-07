@@ -14,8 +14,9 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// `tx` is validated (base58 of 64 bytes, or "recovered"); `registry` is the one checked on chain.
-    Verified { line: u64, batch: u64, slot: u64, unix_timestamp: i64, tx: String, registry: Address },
+    /// `tx` is validated (base58 of 64 bytes, or "recovered"); `registry` is the one checked on chain
+    /// and `authority` the one recorded in its Registry account (`None` if unreadable).
+    Verified { line: u64, batch: u64, slot: u64, unix_timestamp: i64, tx: String, registry: Address, authority: Option<Address> },
     /// The first check that failed.
     NotVerified(String),
 }
@@ -86,8 +87,10 @@ fn valid_tx(tx: &str) -> bool {
 /// so the output is always exactly one line.
 pub fn render(v: &Verdict) -> String {
     match v {
-        Verdict::Verified { line, batch, slot, unix_timestamp, tx, .. } => {
-            format!("VERIFIED line {line} — batch {batch}, slot {slot}, {}, tx {tx}", rfc3339(*unix_timestamp))
+        Verdict::Verified { line, batch, slot, unix_timestamp, tx, registry, authority } => {
+            let tx = if tx == "recovered" { "unknown (recovered after restart)" } else { tx.as_str() };
+            let authority = authority.map_or("unknown".to_string(), |a| a.to_string());
+            format!("VERIFIED line {line} — batch {batch}, slot {slot}, {}, tx {tx}, registry {registry} (authority {authority})", rfc3339(*unix_timestamp))
         }
         Verdict::NotVerified(reason) => {
             let safe: String = reason.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect();
@@ -161,7 +164,8 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
     if sides != merkle::expected_sides(batch.count as usize, (line - batch.first_record) as usize) {
         return no(format!("the proof's shape is not the one for line {line}'s position in batch {}", entry.batch));
     }
-    Ok(Verdict::Verified { line, batch: entry.batch, slot: batch.slot, unix_timestamp: batch.unix_timestamp, tx: entry.tx, registry })
+    let authority = registry_authority(chain, &registry).await.ok().flatten();
+    Ok(Verdict::Verified { line, batch: entry.batch, slot: batch.slot, unix_timestamp: batch.unix_timestamp, tx: entry.tx, registry, authority })
 }
 
 /// `unix` seconds as an RFC 3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`).
@@ -191,6 +195,19 @@ mod tests {
         assert_eq!(out.lines().count(), 1, "{out}");
         assert!(out.starts_with("NOT VERIFIED: "), "{out}");
         assert!(!out.lines().any(|l| l.starts_with("VERIFIED")), "{out}");
+    }
+
+    #[test]
+    fn verified_line_names_the_registry_and_its_authority() {
+        let (reg, auth) = (Address::from([7; 32]), Address::from([9; 32]));
+        let v = |tx: &str, authority| Verdict::Verified { line: 3, batch: 1, slot: 42, unix_timestamp: 0, tx: tx.into(), registry: reg, authority };
+        let sig = bs58::encode([1u8; 64]).into_string();
+        assert_eq!(
+            render(&v(&sig, Some(auth))),
+            format!("VERIFIED line 3 — batch 1, slot 42, 1970-01-01T00:00:00Z, tx {sig}, registry {reg} (authority {auth})")
+        );
+        let unknown = render(&v("recovered", None));
+        assert!(unknown.ends_with(&format!("tx unknown (recovered after restart), registry {reg} (authority unknown)")), "{unknown}");
     }
 
     #[test]

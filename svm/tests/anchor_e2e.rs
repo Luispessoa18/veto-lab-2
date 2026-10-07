@@ -585,7 +585,7 @@ async fn every_anchored_line_verifies_with_its_batch() {
         let b = batch_of(&c, &reg, want_batch);
         assert_eq!(
             v,
-            Verdict::Verified { line, batch: want_batch, slot: b.slot, unix_timestamp: b.unix_timestamp, tx: txs[line as usize].clone(), registry: reg }
+            Verdict::Verified { line, batch: want_batch, slot: b.slot, unix_timestamp: b.unix_timestamp, tx: txs[line as usize].clone(), registry: reg, authority: Some(kp.pubkey()) }
         );
         // Pinning the registry to the right authority changes nothing.
         let v2 = verify_line(&c, &paths.records, &paths.proofs, line, Some(&kp.pubkey())).await.unwrap();
