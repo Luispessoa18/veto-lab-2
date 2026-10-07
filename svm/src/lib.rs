@@ -11,3 +11,4 @@ pub mod project;
 pub mod rpc;
 pub mod http;
 pub mod shadow;
+pub mod merkle;
