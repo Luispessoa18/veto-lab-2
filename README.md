@@ -195,7 +195,7 @@ Cuidados:
 - O programa é atualizável pela carteira local até ser finalizado
   (`solana program set-upgrade-authority <programa> --final`, irreversível; **não foi feito**).
 - Custo: cerca de 0,0017 SOL de aluguel por lote em devnet (grátis na localnet).
-- Códigos de saída: `0` verificado, `1` NÃO verificado, `2` erro (RPC, arquivo, argumentos).
+- Códigos de saída: `0` verificado, `1` NÃO verificado, `2` não deu para checar (erro de RPC, arquivo ou argumentos, ou `PENDING`: tente de novo).
 
 ### Rodar na localnet (custo zero)
 
@@ -214,8 +214,10 @@ export AVAL_REGISTRY_RPC=http://127.0.0.1:8999
 registry/scripts/localnet.sh --stop     # para o validador
 ```
 
-A leitura do `verify` é `finalized`: no validador local isso leva uns 15 s depois do `anchor`;
-antes disso aparece `NOT VERIFIED: ... not found on chain`. Basta repetir.
+A leitura do `verify` é `finalized`, que no validador local demora uns 15 s depois do `anchor`.
+Nesse intervalo ele imprime `PENDING: batch k is confirmed but not finalized yet — retry in ~15 s`
+e sai com código `2`: não é adulteração, só repetir o comando. `NOT VERIFIED: ... not found on chain`
+(código `1`) fica para o lote que não existe nem em `confirmed`.
 
 Saída real de uma execução (10 linhas sintéticas, depois mais 3):
 

@@ -820,3 +820,40 @@ async fn state_file_strings_are_escaped_in_errors() {
     let e = b.startup().await.unwrap_err().to_string();
     assert!(e.contains("not a valid state file") && !e.contains('\n'), "{e}");
 }
+
+/// A chain whose finalized reads see nothing; confirmed reads see `inner` only when `confirmed_sees` is set.
+struct Lagging {
+    inner: LiteSvmChain,
+    confirmed_sees: bool,
+}
+
+impl Chain for Lagging {
+    async fn account(&self, _key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        Ok(None)
+    }
+    async fn account_confirmed(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        if self.confirmed_sees { self.inner.account(key).await } else { Ok(None) }
+    }
+    async fn send(&self, ixs: Vec<Instruction>, signer: &Keypair) -> Result<String, ChainError> {
+        self.inner.send(ixs, signer).await
+    }
+}
+
+#[tokio::test]
+async fn confirmed_but_not_finalized_batch_is_pending_not_not_verified() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let a = kp.pubkey();
+    let lag = Lagging { inner: c, confirmed_sees: true };
+    let v = verify_line(&lag, &paths.records, &paths.proofs, 1, Some(&a)).await.unwrap();
+    assert_eq!(v, Verdict::Pending("batch 0 is confirmed but not finalized yet — retry in ~15 s".into()));
+    assert_eq!(aval_svm::verify::render(&v), "PENDING: batch 0 is confirmed but not finalized yet — retry in ~15 s");
+}
+
+#[tokio::test]
+async fn batch_absent_at_confirmed_too_stays_not_verified() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let a = kp.pubkey();
+    let lag = Lagging { inner: c, confirmed_sees: false };
+    let v = verify_line(&lag, &paths.records, &paths.proofs, 1, Some(&a)).await.unwrap();
+    assert!(not_verified(v).contains("not found on chain"));
+}

@@ -158,6 +158,7 @@ async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: 
             Ok(())
         }
         Verdict::NotVerified(_) => std::process::exit(1),
+        Verdict::Pending(_) => std::process::exit(2),
     }
 }
 

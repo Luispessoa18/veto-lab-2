@@ -28,6 +28,11 @@ pub enum ChainError {
 pub trait Chain: Send + Sync {
     /// The account's data, or `None` when it does not exist.
     fn account(&self, key: &Address) -> impl Future<Output = Result<Option<Vec<u8>>, ChainError>> + Send;
+    /// Like `account`, but read at `confirmed` commitment even when `account` reads at a stricter one.
+    /// Used by `verify` to tell "anchored, not finalized yet" from "never anchored".
+    fn account_confirmed(&self, key: &Address) -> impl Future<Output = Result<Option<Vec<u8>>, ChainError>> + Send {
+        self.account(key)
+    }
     /// Signs and sends `ixs` with `signer` as fee payer; returns the base58 signature once confirmed.
     fn send(&self, ixs: Vec<Instruction>, signer: &Keypair) -> impl Future<Output = Result<String, ChainError>> + Send;
 }
@@ -127,11 +132,11 @@ impl RpcChain {
     }
 }
 
-impl Chain for RpcChain {
-    async fn account(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+impl RpcChain {
+    async fn account_at(&self, key: &Address, commitment: &str) -> Result<Option<Vec<u8>>, ChainError> {
         let v = self
             .up
-            .call("getAccountInfo", json!([key.to_string(), {"encoding": "base64", "commitment": self.read_commitment}]))
+            .call("getAccountInfo", json!([key.to_string(), {"encoding": "base64", "commitment": commitment}]))
             .await
             .map_err(unavail)?;
         let value = &v["value"];
@@ -140,6 +145,16 @@ impl Chain for RpcChain {
         }
         let data = value["data"][0].as_str().ok_or_else(|| ChainError::Unavailable("malformed account data".into()))?;
         B64.decode(data).map(Some).map_err(|_| ChainError::Unavailable("bad base64 in account data".into()))
+    }
+}
+
+impl Chain for RpcChain {
+    async fn account(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        self.account_at(key, self.read_commitment).await
+    }
+
+    async fn account_confirmed(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        self.account_at(key, "confirmed").await
     }
 
     async fn send(&self, ixs: Vec<Instruction>, signer: &Keypair) -> Result<String, ChainError> {
@@ -258,6 +273,18 @@ mod tests {
             let c = if finalized { rpc(&server).finalized_reads() } else { rpc(&server) };
             assert_eq!(c.account(&Address::from([1; 32])).await.unwrap(), None);
         }
+    }
+
+    #[tokio::test]
+    async fn account_confirmed_reads_at_confirmed_even_with_finalized_reads() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "getAccountInfo", "params": [Address::from([1; 32]).to_string(), {"commitment": "confirmed"}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": {"context": {"slot": 1}, "value": null}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(rpc(&server).finalized_reads().account_confirmed(&Address::from([1; 32])).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -19,6 +19,8 @@ pub enum Verdict {
     Verified { line: u64, batch: u64, slot: u64, unix_timestamp: i64, tx: String, registry: Address, authority: Option<Address> },
     /// The first check that failed.
     NotVerified(String),
+    /// Could not check yet: the batch is on chain at `confirmed` but not at `finalized`. Retry shortly.
+    Pending(String),
 }
 
 /// Record line `n` (0-based) without its `\n`; `None` if the file has no complete line `n`.
@@ -83,6 +85,10 @@ fn valid_tx(tx: &str) -> bool {
     tx == "recovered" || bs58::decode(tx).into_vec().is_ok_and(|b| b.len() == 64)
 }
 
+fn one_line(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect()
+}
+
 /// The one line `aval-svm verify` prints. Control characters in a reason are escaped,
 /// so the output is always exactly one line.
 pub fn render(v: &Verdict) -> String {
@@ -92,9 +98,9 @@ pub fn render(v: &Verdict) -> String {
             let authority = authority.map_or("unknown".to_string(), |a| a.to_string());
             format!("VERIFIED line {line} — batch {batch}, slot {slot}, {}, tx {tx}, registry {registry} (authority {authority})", rfc3339(*unix_timestamp))
         }
+        Verdict::Pending(msg) => format!("PENDING: {}", one_line(msg)),
         Verdict::NotVerified(reason) => {
-            let safe: String = reason.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect();
-            format!("NOT VERIFIED: {safe}")
+            format!("NOT VERIFIED: {}", one_line(reason))
         }
     }
 }
@@ -145,6 +151,9 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
     }
     let key = batch_pda(&registry, entry.batch);
     let Some(data) = chain.account(&key).await? else {
+        if chain.account_confirmed(&key).await?.is_some() {
+            return Ok(Verdict::Pending(format!("batch {} is confirmed but not finalized yet — retry in ~15 s", entry.batch)));
+        }
         return no(format!("batch {} ({key}) of registry {registry} not found on chain", entry.batch));
     };
     let Some(batch) = decode_batch(&data) else {
