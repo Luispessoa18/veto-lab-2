@@ -13,3 +13,4 @@ pub mod http;
 pub mod shadow;
 pub mod merkle;
 pub mod registry_client;
+pub mod chain;
