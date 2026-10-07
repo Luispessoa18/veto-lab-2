@@ -1,0 +1,47 @@
+[package]
+name = "aval-svm"
+version = "0.1.0"
+edition = "2021"
+description = "Local Solana VM for Aval: RPC-compatible simulateTransaction over cached state"
+
+[dependencies]
+litesvm = { version = "0.17", features = ["precompiles"] }
+solana-account = "4.3"
+solana-address = "~2.7"
+solana-clock = { version = "~3.2", features = ["serde"] }
+solana-epoch-schedule = { version = "~3.3", features = ["serde"] }
+solana-hash = "~4.6"
+solana-message = { version = "4.2.4", features = ["serde"] }
+solana-rent = "4.4"
+solana-sdk-ids = "3.1"
+solana-transaction = { version = "4.1.5", features = ["serde"] }
+solana-transaction-context = "4.3"
+solana-transaction-error = { version = "~3.4", features = ["serde"] }
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+bincode = "1.3"
+bs58 = "0.5"
+clap = { version = "4", features = ["derive", "env"] }
+crossbeam-channel = "0.5"
+futures = "0.3"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+ed25519-dalek = "2.2"
+solana-ed25519-program = "3.0"
+solana-instruction = "3.5"
+http-body-util = "0.1"
+solana-signature = "~3.5"
+solana-system-interface = { version = "3.2", features = ["bincode"] }
+tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"

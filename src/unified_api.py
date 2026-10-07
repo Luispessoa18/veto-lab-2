@@ -183,13 +183,25 @@ class VetoPipeline:
         return result("ALLOW", "anvil", "ANVIL_SIMULATION_SUCCEEDED",
                       rpc_result=body.get("result"), latency_ms=latency)
 
+    def solana_rpc_targets(self, spec, cluster):
+        """aval-svm (simulacao local) primeiro quando atende o cluster; RPC publico como reserva."""
+        explicit = spec.get("rpc_url") or self.config.get("solana_rpc_url")
+        if explicit:
+            return [("rpc", explicit)]
+        targets = []
+        aval_url = self.config.get("aval_svm_url")
+        if aval_url and str(self.config.get("aval_svm_cluster", "devnet")).lower() == cluster:
+            targets.append(("aval-svm", aval_url))
+        public = self.config.get("solana_rpc_by_cluster", {}).get(cluster)
+        if public:
+            targets.append(("rpc", public))
+        return targets
+
     def simulate_solana(self, payload, request_id):
         spec = payload.get("solana", {})
         cluster = str(spec.get("cluster") or self.config.get("solana_cluster", "devnet")).lower()
-        rpc_by_cluster = self.config.get("solana_rpc_by_cluster", {})
-        rpc_url = (spec.get("rpc_url") or self.config.get("solana_rpc_url")
-                   or rpc_by_cluster.get(cluster))
-        if not rpc_url:
+        targets = self.solana_rpc_targets(spec, cluster)
+        if not targets:
             return result("REVIEW", "solana_simulation", "SOLANA_RPC_NOT_CONFIGURED",
                           cluster=cluster)
         serialized = spec.get("serialized_transaction")
@@ -197,26 +209,51 @@ class VetoPipeline:
             return result("REVIEW", "solana_simulation", "SOLANA_TRANSACTION_MISSING")
         options = {"encoding": spec.get("encoding", "base64"), "commitment": spec.get("commitment", "confirmed"),
                    "replaceRecentBlockhash": True, "sigVerify": False, "innerInstructions": True}
-        started = time.perf_counter()
-        try:
-            response = requests.post(rpc_url, json={"jsonrpc": "2.0", "id": request_id,
-                                     "method": "simulateTransaction", "params": [serialized, options]},
-                                     timeout=self.config.get("solana_timeout_seconds", 30))
-            response.raise_for_status(); body = response.json()
-        except Exception as exc:
+        body, engine, latency, last_error = None, None, None, None
+        for engine, rpc_url in targets:
+            started = time.perf_counter()
+            timeout = (self.config.get("aval_svm_timeout_seconds", 12) if engine == "aval-svm"
+                       else self.config.get("solana_timeout_seconds", 30))
+            try:
+                response = requests.post(rpc_url, json={"jsonrpc": "2.0", "id": request_id,
+                                         "method": "simulateTransaction", "params": [serialized, options]},
+                                         timeout=timeout)
+                response.raise_for_status(); body = response.json()
+                if not isinstance(body, dict):
+                    raise ValueError("resposta JSON-RPC invalida")
+            except Exception as exc:
+                # qualquer falha do aval-svm (fora do ar, lento, HTTP 5xx, resposta invalida): tenta o RPC publico
+                if engine == "aval-svm" or isinstance(exc, requests.ConnectionError):
+                    last_error, body = exc, None
+                    continue
+                return result("REVIEW", "solana_simulation", "SOLANA_RPC_UNAVAILABLE",
+                              cluster=cluster, engine=engine, error=str(exc)[:300])
+            latency = round((time.perf_counter() - started) * 1000, 2)
+            if engine == "aval-svm":
+                # aval-svm nao suporta o programa, perdeu o upstream ou falhou por dentro: tenta o RPC publico
+                if (body.get("error") or {}).get("code") in (-32603, -32004, -32005):
+                    last_error, body = body["error"], None
+                    continue
+                # resposta "de sucesso" sem o bloco aval: outro servidor na porta (ex.: solana-test-validator)
+                if not body.get("error") and not (isinstance(body.get("result"), dict) and "aval" in body["result"]):
+                    last_error, body = "a porta do aval-svm respondeu sem o bloco aval (outro servidor?)", None
+                    continue
+            break
+        if body is None:
             return result("REVIEW", "solana_simulation", "SOLANA_RPC_UNAVAILABLE",
-                          cluster=cluster, error=str(exc)[:300])
-        latency = round((time.perf_counter() - started) * 1000, 2)
+                          cluster=cluster, engine=engine, error=str(last_error)[:300])
         if body.get("error"):
-            return result("BLOCK", "solana_simulation", "SOLANA_RPC_ERROR", cluster=cluster,
+            return result("BLOCK", "solana_simulation", "SOLANA_RPC_ERROR", cluster=cluster, engine=engine,
                           rpc_error=body["error"], latency_ms=latency)
-        value = body.get("result", {}).get("value", {})
+        res = body.get("result", {})
+        value = res.get("value", {})
         if value.get("err") is not None:
-            return result("BLOCK", "solana_simulation", "SOLANA_SIMULATION_FAILED", cluster=cluster,
-                          simulation_error=value.get("err"), logs=value.get("logs", []), latency_ms=latency)
+            return result("BLOCK", "solana_simulation", "SOLANA_SIMULATION_FAILED", cluster=cluster, engine=engine,
+                          simulation_error=value.get("err"), logs=value.get("logs", []), latency_ms=latency,
+                          aval=res.get("aval"))
         return result("ALLOW", "solana_simulation", "SOLANA_SIMULATION_SUCCEEDED",
-                      cluster=cluster, units_consumed=value.get("unitsConsumed"),
-                      logs=value.get("logs", []), latency_ms=latency)
+                      cluster=cluster, engine=engine, units_consumed=value.get("unitsConsumed"),
+                      logs=value.get("logs", []), latency_ms=latency, aval=res.get("aval"))
 
     def verify_transaction(self, payload, request_id):
         trace = []

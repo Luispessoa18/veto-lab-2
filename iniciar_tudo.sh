@@ -31,6 +31,15 @@ echo "Iniciando Anvil na porta 8545 (log: results/anvil.log)..."
 "$ANVIL" --host 127.0.0.1 --port 8545 > results/anvil.log 2>&1 &
 pids+=($!)
 
+AVAL="${AVAL_SVM:-svm/target/release/aval-svm}"
+if [ -x "$AVAL" ]; then
+  echo "Iniciando aval-svm (simulacao Solana local) na porta 8899 (log: results/aval-svm.log)..."
+  "$AVAL" serve --config svm/aval-svm.toml > results/aval-svm.log 2>&1 &
+  pids+=($!)
+else
+  echo "[AVISO] aval-svm nao compilado (cd svm && cargo build --release). Usando RPC publico."
+fi
+
 echo "Iniciando API + Prompt Guard na porta 8070 (log: results/api.log)..."
 "$PY" -m src.unified_api --host 127.0.0.1 --port 8070 > results/api.log 2>&1 &
 pids+=($!)

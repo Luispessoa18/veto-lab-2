@@ -1,6 +1,7 @@
 # Arquivos/pastas ocultos (.venv, .venv-lora, .cache, etc.)
 .*
 !.gitignore
+!.github/
 
 # Modelos grandes: baixe com BAIXAR_MODELOS.bat / baixar_modelos.sh
 *.gguf
@@ -18,3 +19,8 @@ external/
 __pycache__/
 *.pyc
 results/tmp*/
+
+# Rust (aval-svm)
+svm/target/
+results/aval_shadow.jsonl
+results/aval-svm.log

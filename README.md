@@ -124,6 +124,48 @@ anvil --host 127.0.0.1 --port 8545
 | `09_SIMULAR_ATAQUES_SOLANA.bat` | `.venv/bin/python -m src.solana_attack_simulator --api http://127.0.0.1:8070` |
 | testes | `.venv/bin/python -m unittest discover -s tests` |
 
+## aval-svm — simulação Solana local (Rust)
+
+A camada `solana_simulation` roda as transações numa VM Solana local (LiteSVM) em vez de
+chamar o RPC público a cada verificação. As contas vêm do RPC uma vez, ficam em cache
+(2 s; programas são relidos a cada 60 s, `program_ttl_ms`, para pegar upgrades) e a simulação
+roda em milissegundos. Se o aval-svm não estiver rodando, não responder, ou não suportar um
+programa, a API volta sozinha para o RPC público.
+
+Requisitos: Rust (rustc >= 1.97.1; se já tiver Rust, rode `rustup update`). No Linux, instale
+`build-essential`; no Windows, use o `rustup-init.exe` (https://rustup.rs) e o Visual Studio
+Build Tools com o componente "Desenvolvimento para desktop com C++" (MSVC).
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # uma vez
+cd svm && cargo build --release && cd ..
+./svm/target/release/aval-svm serve --config svm/aval-svm.toml          # porta 8899
+```
+
+- A porta 8899 também é a padrão do `solana-test-validator`. Para usar outra, defina
+  `AVAL_LISTEN=127.0.0.1:8898` e mude `aval_svm_url` em `config/settings.json` para a mesma
+  porta. Se outro servidor responder na porta (sem o bloco `aval`), a API usa o RPC público.
+
+- Compatível com JSON-RPC: qualquer cliente que fala `simulateTransaction` (inclusive o VETO
+  em TypeScript) só precisa apontar a URL para `http://127.0.0.1:8899`.
+- `POST /v1/project` devolve a **projeção**: saldos SOL/tokens antes e depois, mudanças de
+  dono/delegate e contas criadas/fechadas.
+- Toda resposta traz `aval.digest` (sha256 da mensagem, igual ao `messageDigest` do VETO) e
+  o slot do estado usado (`stateSlot`, o mais novo; `stateSlotMin`, o mais antigo entre as contas
+  que não são programas — iguais significa que o estado veio todo de um só slot).
+- `getMultipleAccounts` com `encoding: "base64"` (sem `dataSlice`/`minContextSlot`, com ao menos uma
+  conta) sai do mesmo cache da simulação — em geral no mesmo slot dela, mas sem garantia; outras
+  formas vão para o upstream.
+- Upstream: `AVAL_UPSTREAM_URL` (padrão devnet). Para mainnet use um RPC próprio (Helius etc.).
+- Medir contra o RPC: `aval-svm shadow --upstream <url> --count 200`.
+- Usa o `Clock` e o `EpochSchedule` do cluster, e verifica os precompiles ed25519/secp256k1.
+  Transações maiores que 4096 bytes são recusadas (`-32602`).
+- Limitações conhecidas: `minContextSlot` é ignorado; `sigVerify: true` é recusado (simule a
+  transação sem assinatura); o `replacementBlockhash` é gerado pela VM local, não é um blockhash
+  do cluster — não assine transações com ele.
+
+Desenho: `svm/docs/2026-10-06-aval-svm-design.md`.
+
 ## Avaliação adversarial
 
 `03_GERAR_CASOS.bat` cria 600 casos-base e aproximadamente 20% de equivalentes

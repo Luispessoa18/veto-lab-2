@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  svm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: svm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: svm
+      - run: cargo test --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  lab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
