@@ -216,6 +216,12 @@ pub fn read_keypair(path: &Path) -> anyhow::Result<Keypair> {
         .map_err(|_| anyhow::anyhow!("keypair file {} is not a valid ed25519 keypair (public half does not match the secret)", path.display()))
 }
 
+/// After `consecutive` chain errors in a row, should `aval-svm anchor` stop? The long-running
+/// mode always retries (the RPC comes back); `--once` gives up after 3 in a row.
+pub fn give_up_on_chain_errors(once: bool, consecutive: u32) -> bool {
+    once && consecutive >= 3
+}
+
 /// Lines read from the records file for one batch.
 struct Pending {
     lines: Vec<Vec<u8>>,

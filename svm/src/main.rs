@@ -1,6 +1,6 @@
-use aval_svm::anchor_batcher::{read_keypair, BatchError, Batcher, Paths};
-use aval_svm::chain::RpcChain;
-use aval_svm::verify::{rfc3339, verify_line, Verdict};
+use aval_svm::anchor_batcher::{give_up_on_chain_errors, read_keypair, BatchError, Batcher, Paths};
+use aval_svm::chain::{ChainError, RpcChain};
+use aval_svm::verify::{registry_authority, render, verify_line, Verdict};
 use aval_svm::{cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
 use clap::{Parser, Subcommand};
 use solana_address::Address;
@@ -84,20 +84,32 @@ async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_s
     let signer = read_keypair(&keypair)?;
     let interval = Duration::from_secs(interval_secs.max(1));
     let mut b = Batcher::new(rpc_chain(&upstream), signer, Paths::for_records(&records), max_batch);
+    let mut errors = 0u32;
+    // Logs a chain error and waits, or exits 2 once `--once` has seen 3 in a row.
+    let chain_error = |errors: &mut u32, e: ChainError| {
+        *errors += 1;
+        if give_up_on_chain_errors(once, *errors) {
+            eprintln!("error: giving up after {errors} consecutive chain errors: {e}");
+            std::process::exit(2);
+        }
+        eprintln!("chain error (retrying in {}s): {e}", interval.as_secs());
+    };
     loop {
         match b.startup().await {
             Ok(()) => break,
             Err(BatchError::Chain(e)) => {
-                eprintln!("chain error at startup (retrying in {}s): {e}", interval.as_secs());
+                chain_error(&mut errors, e);
                 tokio::time::sleep(interval).await;
             }
             Err(e) => fatal(e),
         }
     }
+    errors = 0;
     eprintln!("anchoring {} into registry {} via {upstream}", records.display(), b.registry());
     loop {
         match b.anchor_pending().await {
             Ok(Some(a)) => {
+                errors = 0;
                 println!("anchored batch {}: lines {}..{} tx {}", a.index, a.first_line, a.first_line + a.count as u64, a.tx);
                 // A full batch means more may be waiting; otherwise batch up for one interval.
                 if once || a.count as usize >= max_batch {
@@ -106,9 +118,12 @@ async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_s
                 tokio::time::sleep(interval).await;
             }
             Ok(None) if once => break,
-            Ok(None) => tokio::time::sleep(interval).await,
+            Ok(None) => {
+                errors = 0;
+                tokio::time::sleep(interval).await;
+            }
             Err(BatchError::Chain(e)) => {
-                eprintln!("chain error (retrying in {}s): {e}", interval.as_secs());
+                chain_error(&mut errors, e);
                 tokio::time::sleep(interval).await;
             }
             Err(e) => fatal(e),
@@ -117,27 +132,31 @@ async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_s
     Ok(())
 }
 
-fn fatal(e: BatchError) -> ! {
+/// Exit codes: 1 = NOT VERIFIED; 2 = could not run or check (I/O, RPC, refused to anchor).
+fn fatal(e: impl std::fmt::Display) -> ! {
     eprintln!("error: {e}");
-    std::process::exit(1);
+    std::process::exit(2);
 }
 
 async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: String, authority: Option<String>) -> anyhow::Result<()> {
-    let authority = authority.map(|a| Address::from_str(&a).map_err(|_| anyhow::anyhow!("--authority {a} is not a valid pubkey"))).transpose()?;
+    let authority = authority.map(|a| Address::from_str(&a).map_err(|_| anyhow::anyhow!("--authority {a:?} is not a valid pubkey"))).transpose()?;
     let proofs = proofs.unwrap_or_else(|| Paths::for_records(&records).proofs);
-    let verdict = verify_line(&rpc_chain(&upstream), &records, &proofs, line, authority.as_ref()).await?;
+    let chain = rpc_chain(&upstream);
+    let verdict = verify_line(&chain, &records, &proofs, line, authority.as_ref()).await?;
+    println!("{}", render(&verdict));
     match verdict {
-        Verdict::Verified { line, batch, slot, unix_timestamp, tx } => {
-            println!("VERIFIED line {line} — batch {batch}, slot {slot}, {}, tx {tx}", rfc3339(unix_timestamp));
+        Verdict::Verified { registry, .. } => {
             if authority.is_none() {
-                eprintln!("note: the registry was taken from the proofs file; pass --authority <pubkey> to pin it");
+                let owner = match registry_authority(&chain, &registry).await {
+                    Ok(Some(a)) => a.to_string(),
+                    Ok(None) => "unknown (no Registry account)".into(),
+                    Err(e) => format!("unknown ({e})"),
+                };
+                eprintln!("note: registry {registry} (authority {owner}) was taken from the proofs file; pass --authority <pubkey> to pin it");
             }
             Ok(())
         }
-        Verdict::NotVerified(reason) => {
-            println!("NOT VERIFIED: {reason}");
-            std::process::exit(1);
-        }
+        Verdict::NotVerified(_) => std::process::exit(1),
     }
 }
 
@@ -156,8 +175,10 @@ async fn main() -> anyhow::Result<()> {
             let d = aval_svm::decode::decode(&tx, aval_svm::decode::Encoding::Base64)?;
             println!("{}", d.digest);
         }
-        Cmd::Anchor { records, keypair, upstream, interval_secs, max_batch, once } => anchor(records, keypair, upstream, interval_secs, max_batch, once).await?,
-        Cmd::Verify { records, line, proofs, upstream, authority } => verify(records, line, proofs, upstream, authority).await?,
+        Cmd::Anchor { records, keypair, upstream, interval_secs, max_batch, once } => {
+            anchor(records, keypair, upstream, interval_secs, max_batch, once).await.unwrap_or_else(|e| fatal(e))
+        }
+        Cmd::Verify { records, line, proofs, upstream, authority } => verify(records, line, proofs, upstream, authority).await.unwrap_or_else(|e| fatal(e)),
         Cmd::Shadow { upstream, count, slot, out, delay_ms } => aval_svm::shadow::run(&upstream, count, slot, &out, delay_ms).await?,
         Cmd::Serve { config } => {
             let c = Config::load(Some(&config))?;

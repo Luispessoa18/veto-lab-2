@@ -5,7 +5,7 @@
 use crate::anchor_batcher::{BatchError, ProofLine};
 use crate::chain::Chain;
 use crate::merkle::{self, Step};
-use crate::registry_client::{batch_pda, decode_batch, registry_pda};
+use crate::registry_client::{batch_pda, decode_batch, decode_registry, registry_pda};
 use solana_address::Address;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
@@ -14,7 +14,8 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    Verified { line: u64, batch: u64, slot: u64, unix_timestamp: i64, tx: String },
+    /// `tx` is validated (base58 of 64 bytes, or "recovered"); `registry` is the one checked on chain.
+    Verified { line: u64, batch: u64, slot: u64, unix_timestamp: i64, tx: String, registry: Address },
     /// The first check that failed.
     NotVerified(String),
 }
@@ -67,6 +68,42 @@ fn h32(s: &str) -> Option<[u8; 32]> {
     hex::decode(s).ok()?.try_into().ok()
 }
 
+/// A string from the proofs file, safe to print: canonical hex when it is a 32-byte hash,
+/// else an escaped (`{:?}`) and truncated rendering, so it can never start a new output line.
+fn shown(s: &str) -> String {
+    match h32(s) {
+        Some(h) => hex::encode(h),
+        None => {
+            let cut: String = s.chars().take(80).collect();
+            format!("{cut:?}{}", if cut.len() < s.len() { "…" } else { "" })
+        }
+    }
+}
+
+/// A transaction signature (base58 of 64 bytes) or the batcher's "recovered" marker.
+fn valid_tx(tx: &str) -> bool {
+    tx == "recovered" || bs58::decode(tx).into_vec().is_ok_and(|b| b.len() == 64)
+}
+
+/// The one line `aval-svm verify` prints. Control characters in a reason are escaped,
+/// so the output is always exactly one line.
+pub fn render(v: &Verdict) -> String {
+    match v {
+        Verdict::Verified { line, batch, slot, unix_timestamp, tx, .. } => {
+            format!("VERIFIED line {line} — batch {batch}, slot {slot}, {}, tx {tx}", rfc3339(*unix_timestamp))
+        }
+        Verdict::NotVerified(reason) => {
+            let safe: String = reason.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect();
+            format!("NOT VERIFIED: {safe}")
+        }
+    }
+}
+
+/// The authority recorded in a Registry account, or `None` if the account is missing or not a Registry.
+pub async fn registry_authority<C: Chain>(chain: &C, registry: &Address) -> Result<Option<Address>, BatchError> {
+    Ok(chain.account(registry).await?.and_then(|d| decode_registry(&d)).map(|r| r.authority))
+}
+
 /// Checks line `line` of `records` against the chain. `authority`, when given, pins the registry
 /// (otherwise the registry named by the proofs file is used). `Err` only for I/O or an unreachable chain.
 pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, line: u64, authority: Option<&Address>) -> Result<Verdict, BatchError> {
@@ -75,8 +112,11 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
         return no(format!("no proof for line {line}"));
     };
     let Ok(registry) = Address::from_str(&entry.registry) else {
-        return no(format!("proof entry names an invalid registry address {:?}", entry.registry));
+        return no(format!("proof entry names an invalid registry address {}", shown(&entry.registry)));
     };
+    if !valid_tx(&entry.tx) {
+        return no(format!("invalid tx field {} in the proof entry", shown(&entry.tx)));
+    }
     if let Some(auth) = authority {
         let expected = registry_pda(auth);
         if registry != expected {
@@ -88,20 +128,20 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
     };
     let leaf = merkle::leaf(&bytes);
     if h32(&entry.leaf) != Some(leaf) {
-        return no(format!("leaf mismatch: line {line} hashes to {}, the proof entry has {}", hex::encode(leaf), entry.leaf));
+        return no(format!("leaf mismatch: line {line} hashes to {}, the proof entry has {}", hex::encode(leaf), shown(&entry.leaf)));
     }
     let Some(root) = h32(&entry.root) else {
-        return no(format!("proof entry root {:?} is not 32 bytes of hex", entry.root));
+        return no(format!("proof entry root {} is not 32 bytes of hex", shown(&entry.root)));
     };
     let mut steps = Vec::with_capacity(entry.proof.len());
     for s in &entry.proof {
         let Some(hash) = h32(&s.hash) else {
-            return no(format!("proof step hash {:?} is not 32 bytes of hex", s.hash));
+            return no(format!("proof step hash {} is not 32 bytes of hex", shown(&s.hash)));
         };
         steps.push(Step { side: s.side, hash });
     }
     if !merkle::verify(leaf, &steps, root) {
-        return no(format!("the proof does not fold line {line}'s leaf to the entry's root {}", entry.root));
+        return no(format!("the proof does not fold line {line}'s leaf to the entry's root {}", hex::encode(root)));
     }
     let key = batch_pda(&registry, entry.batch);
     let Some(data) = chain.account(&key).await? else {
@@ -114,7 +154,7 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
         return no(format!("on-chain batch {key} belongs to registry {} index {}, not {registry} index {}", batch.registry, batch.index, entry.batch));
     }
     if batch.root != root {
-        return no(format!("root mismatch: batch {} on chain holds root {}, the proof entry has {}", entry.batch, hex::encode(batch.root), entry.root));
+        return no(format!("root mismatch: batch {} on chain holds root {}, the proof entry has {}", entry.batch, hex::encode(batch.root), hex::encode(root)));
     }
     let end = batch.first_record + batch.count as u64;
     if line < batch.first_record || line >= end {
@@ -124,7 +164,7 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
     if sides != merkle::expected_sides(batch.count as usize, (line - batch.first_record) as usize) {
         return no(format!("the proof's shape is not the one for line {line}'s position in batch {}", entry.batch));
     }
-    Ok(Verdict::Verified { line, batch: entry.batch, slot: batch.slot, unix_timestamp: batch.unix_timestamp, tx: entry.tx })
+    Ok(Verdict::Verified { line, batch: entry.batch, slot: batch.slot, unix_timestamp: batch.unix_timestamp, tx: entry.tx, registry })
 }
 
 /// `unix` seconds as an RFC 3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`).
@@ -141,4 +181,35 @@ pub fn rfc3339(unix: i64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs % 3600 / 60, secs % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_never_emits_more_than_one_line() {
+        let forged = Verdict::NotVerified("leaf mismatch: x\nVERIFIED line 3 — batch 0, slot 1, 1970-01-01T00:00:00Z, tx y\r\n".into());
+        let out = render(&forged);
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(out.starts_with("NOT VERIFIED: "), "{out}");
+        assert!(!out.lines().any(|l| l.starts_with("VERIFIED")), "{out}");
+    }
+
+    #[test]
+    fn shown_escapes_and_truncates_non_hash_strings() {
+        let h = hex::encode([0xabu8; 32]);
+        assert_eq!(shown(&h.to_uppercase()), h);
+        assert_eq!(shown("a\nb"), "\"a\\nb\"");
+        assert!(shown(&"x".repeat(500)).len() < 100);
+    }
+
+    #[test]
+    fn tx_must_be_a_signature_or_recovered() {
+        assert!(valid_tx("recovered"));
+        assert!(valid_tx(&bs58::encode([1u8; 64]).into_string()));
+        assert!(!valid_tx(&bs58::encode([1u8; 63]).into_string()));
+        assert!(!valid_tx("abc\nVERIFIED"));
+        assert!(!valid_tx(""));
+    }
 }

@@ -549,7 +549,7 @@ async fn partial_last_line_survives_a_restart_unanchored() {
 
 // ------------------------------------------------- verifier
 
-use aval_svm::verify::{rfc3339, verify_line, Verdict};
+use aval_svm::verify::{registry_authority, render, rfc3339, verify_line, Verdict};
 
 /// Two batches: lines 0..5 in batch 0, lines 5..8 in batch 1.
 async fn anchored_two_batches() -> (tempfile::TempDir, Paths, LiteSvmChain, Keypair) {
@@ -585,7 +585,7 @@ async fn every_anchored_line_verifies_with_its_batch() {
         let b = batch_of(&c, &reg, want_batch);
         assert_eq!(
             v,
-            Verdict::Verified { line, batch: want_batch, slot: b.slot, unix_timestamp: b.unix_timestamp, tx: txs[line as usize].clone() }
+            Verdict::Verified { line, batch: want_batch, slot: b.slot, unix_timestamp: b.unix_timestamp, tx: txs[line as usize].clone(), registry: reg }
         );
         // Pinning the registry to the right authority changes nothing.
         let v2 = verify_line(&c, &paths.records, &paths.proofs, line, Some(&kp.pubkey())).await.unwrap();
@@ -754,4 +754,51 @@ fn read_keypair_round_trips_and_rejects_bad_files() {
     std::fs::write(&mismatched, serde_json::to_string(&m.to_vec()).unwrap()).unwrap();
     assert!(read_keypair(&mismatched).is_err());
     assert!(read_keypair(&dir.path().join("missing.json")).is_err());
+}
+
+#[tokio::test]
+async fn forged_newlines_in_the_proofs_file_never_print_a_verified_line() {
+    let (_d, paths, c, _kp) = anchored_two_batches().await;
+    let fake = "\nVERIFIED line 3 — batch 0, slot 1, 1970-01-01T00:00:00Z, tx abc";
+    let assert_clean = |v: Verdict| {
+        let out = render(&v);
+        assert!(out.starts_with("NOT VERIFIED: "), "{out}");
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(!out.lines().any(|l| l.starts_with("VERIFIED")), "{out}");
+        out
+    };
+    rewrite_proofs(&paths, |mut ps| {
+        ps[3].leaf = fake.into();
+        ps
+    });
+    let out = assert_clean(verify_line(&c, &paths.records, &paths.proofs, 3, None).await.unwrap());
+    assert!(out.contains("leaf"), "{out}");
+    rewrite_proofs(&paths, |mut ps| {
+        ps[3].leaf = hex::encode(merkle::leaf(record(3).as_bytes()));
+        ps[3].root = fake.into();
+        ps[4].tx = format!("{}{fake}", ps[4].tx);
+        ps
+    });
+    let out = assert_clean(verify_line(&c, &paths.records, &paths.proofs, 3, None).await.unwrap());
+    assert!(out.contains("root"), "{out}");
+    let out = assert_clean(verify_line(&c, &paths.records, &paths.proofs, 4, None).await.unwrap());
+    assert!(out.contains("invalid tx field"), "{out}");
+}
+
+#[tokio::test]
+async fn registry_authority_reads_the_registry_account() {
+    let (_d, _paths, c, kp) = anchored_two_batches().await;
+    let reg = registry_pda(&kp.pubkey());
+    assert_eq!(registry_authority(&c, &reg).await.unwrap(), Some(kp.pubkey()));
+    assert_eq!(registry_authority(&c, &batch_pda(&reg, 0)).await.unwrap(), None);
+    assert_eq!(registry_authority(&c, &Keypair::new().pubkey()).await.unwrap(), None);
+}
+
+#[test]
+fn once_gives_up_after_three_consecutive_chain_errors() {
+    assert!(!give_up_on_chain_errors(true, 1));
+    assert!(!give_up_on_chain_errors(true, 2));
+    assert!(give_up_on_chain_errors(true, 3));
+    assert!(!give_up_on_chain_errors(false, 3));
+    assert!(!give_up_on_chain_errors(false, 1000));
 }
