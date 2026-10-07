@@ -124,6 +124,8 @@ anvil --host 127.0.0.1 --port 8545
 | `09_SIMULAR_ATAQUES_SOLANA.bat` | `.venv/bin/python -m src.solana_attack_simulator --api http://127.0.0.1:8070` |
 | testes | `.venv/bin/python -m unittest discover -s tests` |
 
+> **Guia passo a passo para configurar e testar:** [CONFIGURAR_AVAL.md](CONFIGURAR_AVAL.md)
+
 ## aval-svm — simulação Solana local (Rust)
 
 A camada `solana_simulation` roda as transações numa VM Solana local (LiteSVM) em vez de
