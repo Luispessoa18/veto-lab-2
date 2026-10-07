@@ -857,3 +857,14 @@ async fn batch_absent_at_confirmed_too_stays_not_verified() {
     let v = verify_line(&lag, &paths.records, &paths.proofs, 1, Some(&a)).await.unwrap();
     assert!(not_verified(v).contains("not found on chain"));
 }
+
+#[tokio::test]
+async fn confirmed_batch_that_fails_the_checks_is_not_verified_rather_than_pending() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let a = kp.pubkey();
+    // Point line 1's proof at batch 1 (a real, confirmed batch with a different root).
+    rewrite_proofs(&paths, |ps| ps.into_iter().map(|mut p| { if p.line == 1 { p.batch = 1; } p }).collect());
+    let lag = Lagging { inner: c, confirmed_sees: true };
+    let m = not_verified(verify_line(&lag, &paths.records, &paths.proofs, 1, Some(&a)).await.unwrap());
+    assert!(m.contains("root mismatch"), "{m}");
+}

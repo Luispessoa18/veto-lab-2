@@ -150,11 +150,12 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
         return no(format!("the proof does not fold line {line}'s leaf to the entry's root {}", hex::encode(root)));
     }
     let key = batch_pda(&registry, entry.batch);
-    let Some(data) = chain.account(&key).await? else {
-        if chain.account_confirmed(&key).await?.is_some() {
-            return Ok(Verdict::Pending(format!("batch {} is confirmed but not finalized yet — retry in ~15 s", entry.batch)));
-        }
-        return no(format!("batch {} ({key}) of registry {registry} not found on chain", entry.batch));
+    let (data, finalized) = match chain.account(&key).await? {
+        Some(d) => (d, true),
+        None => match chain.account_confirmed(&key).await? {
+            Some(d) => (d, false),
+            None => return no(format!("batch {} ({key}) of registry {registry} not found on chain", entry.batch)),
+        },
     };
     let Some(batch) = decode_batch(&data) else {
         return no(format!("account {key} is not an aval_registry Batch"));
@@ -172,6 +173,10 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
     let sides: Vec<_> = steps.iter().map(|s| s.side).collect();
     if sides != merkle::expected_sides(batch.count as usize, (line - batch.first_record) as usize) {
         return no(format!("the proof's shape is not the one for line {line}'s position in batch {}", entry.batch));
+    }
+    if !finalized {
+        // Every check passed against the confirmed account; only finality is missing.
+        return Ok(Verdict::Pending(format!("batch {} is confirmed but not finalized yet — retry in ~15 s", entry.batch)));
     }
     let authority = registry_authority(chain, &registry).await.ok().flatten();
     Ok(Verdict::Verified { line, batch: entry.batch, slot: batch.slot, unix_timestamp: batch.unix_timestamp, tx: entry.tx, registry, authority })

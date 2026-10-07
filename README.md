@@ -199,18 +199,22 @@ Cuidados:
 
 ### Rodar na localnet (custo zero)
 
-Requer Solana CLI (Agave) e o keypair do programa em `registry/target/deploy/` (nunca versionado).
-O script sobe um `solana-test-validator` na porta 8999, faz um airdrop de 2,5 SOL simulados e
-publica o programa `5t75hMEMtV5rEN7BuRu3pQfyu2yUc5DVMBFqvdLxoZN5` (o `.so` está em
-`svm/tests/fixtures/`):
+Requer o Solana CLI (Agave). O script sobe um `solana-test-validator` na porta 8999, faz um airdrop
+de 2,5 SOL simulados e deixa o programa `5t75hMEMtV5rEN7BuRu3pQfyu2yUc5DVMBFqvdLxoZN5` (o `.so` e o id
+estão em `svm/tests/fixtures/`) carregado. Com o keypair do programa em `registry/target/deploy/`
+(nunca versionado) ele faz um `solana program deploy` de verdade; num clone limpo, sem esse keypair,
+carrega o programa no genesis com o mesmo id e a sua carteira como upgrade authority. Se
+`~/.config/solana/id.json` não existir, o script cria uma carteira nova (sem exibir a chave).
+`--demo-records` escreve `results/demo-records.jsonl` (10 linhas sintéticas) para os comandos abaixo:
 
 ```bash
-registry/scripts/localnet.sh            # sobe o validador e faz o deploy
+registry/scripts/localnet.sh            # sobe o validador e publica o programa
+registry/scripts/localnet.sh --demo-records   # results/demo-records.jsonl
 export AVAL_REGISTRY_RPC=http://127.0.0.1:8999
 ./svm/target/release/aval-svm anchor --records results/demo-records.jsonl \
     --keypair ~/.config/solana/id.json --once
 ./svm/target/release/aval-svm verify --records results/demo-records.jsonl --line 7 \
-    --authority 3Q2guAHRjtUdhbTvvXzztpjEdFG8RpMm15fv6Lho4mzD
+    --authority $(solana-keygen pubkey ~/.config/solana/id.json)
 registry/scripts/localnet.sh --stop     # para o validador
 ```
 
