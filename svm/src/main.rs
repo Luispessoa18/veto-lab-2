@@ -1,6 +1,6 @@
 use aval_svm::anchor_batcher::{escaped, give_up_on_chain_errors, read_keypair, BatchError, Batcher, Paths};
 use aval_svm::chain::{ChainError, RpcChain};
-use aval_svm::verify::{registry_authority, render, verify_line, Verdict};
+use aval_svm::verify::{render, verify_line, Verdict};
 use aval_svm::{cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
 use clap::{Parser, Subcommand};
 use solana_address::Address;
@@ -80,6 +80,12 @@ fn rpc_chain(url: &str) -> RpcChain {
     RpcChain::new(Upstream::new(url, "confirmed", UPSTREAM_TIMEOUT_MS))
 }
 
+/// Inclusive line range: a batch of `count` records starting at line `a` ends at `a + count - 1`.
+fn anchored_message(index: u64, first_line: u64, count: u32, tx: &str) -> String {
+    let last = first_line + u64::from(count).saturating_sub(1);
+    format!("anchored batch {index}: lines {first_line}–{last} ({count} records) tx {tx}")
+}
+
 async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_secs: u64, max_batch: usize, once: bool) -> anyhow::Result<()> {
     let signer = read_keypair(&keypair)?;
     let interval = Duration::from_secs(interval_secs.max(1));
@@ -89,10 +95,10 @@ async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_s
     let chain_error = |errors: &mut u32, e: ChainError| {
         *errors += 1;
         if give_up_on_chain_errors(once, *errors) {
-            eprintln!("error: giving up after {errors} consecutive chain errors: {e}");
+            eprintln!("error: giving up after {errors} consecutive chain errors: {}", escaped(&e.to_string()));
             std::process::exit(2);
         }
-        eprintln!("chain error (retrying in {}s): {e}", interval.as_secs());
+        eprintln!("chain error (retrying in {}s): {}", interval.as_secs(), escaped(&e.to_string()));
     };
     loop {
         match b.startup().await {
@@ -110,7 +116,7 @@ async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_s
         match b.anchor_pending().await {
             Ok(Some(a)) => {
                 errors = 0;
-                println!("anchored batch {}: lines {}..{} tx {}", a.index, a.first_line, a.first_line + a.count as u64, a.tx);
+                println!("{}", anchored_message(a.index, a.first_line, a.count, &a.tx));
                 // A full batch means more may be waiting; otherwise batch up for one interval.
                 if once || a.count as usize >= max_batch {
                     continue;
@@ -141,18 +147,13 @@ fn fatal(e: impl std::fmt::Display) -> ! {
 async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: String, authority: Option<String>) -> anyhow::Result<()> {
     let authority = authority.map(|a| Address::from_str(&a).map_err(|_| anyhow::anyhow!("--authority {a:?} is not a valid pubkey"))).transpose()?;
     let proofs = proofs.unwrap_or_else(|| Paths::for_records(&records).proofs);
-    let chain = rpc_chain(&upstream);
+    let chain = rpc_chain(&upstream).finalized_reads();
     let verdict = verify_line(&chain, &records, &proofs, line, authority.as_ref()).await?;
     println!("{}", render(&verdict));
     match verdict {
         Verdict::Verified { registry, .. } => {
             if authority.is_none() {
-                let owner = match registry_authority(&chain, &registry).await {
-                    Ok(Some(a)) => a.to_string(),
-                    Ok(None) => "unknown (no Registry account)".into(),
-                    Err(e) => format!("unknown ({})", escaped(&e.to_string())),
-                };
-                eprintln!("note: registry {registry} (authority {owner}) was taken from the proofs file; pass --authority <pubkey> to pin it");
+                eprintln!("note: registry {registry} was taken from the proofs file; pass --authority <pubkey> to pin it");
             }
             Ok(())
         }
@@ -195,4 +196,15 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::anchored_message;
+
+    #[test]
+    fn anchored_message_ends_on_the_last_line_inclusive() {
+        assert_eq!(anchored_message(2, 5, 3, "SIG"), "anchored batch 2: lines 5–7 (3 records) tx SIG");
+        assert_eq!(anchored_message(0, 0, 1, "SIG"), "anchored batch 0: lines 0–0 (1 records) tx SIG");
+    }
 }

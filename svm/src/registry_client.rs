@@ -13,6 +13,8 @@ pub const ERR_EMPTY_BATCH: u32 = 6002;
 
 const SYSTEM_PROGRAM: Address = Address::new_from_array([0; 32]);
 
+/// The program id is read from `tests/fixtures/aval_registry.id` on purpose: that one file is
+/// the single source shared with the pinned `.so` fixture and the deploy, so the three cannot drift.
 pub fn program_id() -> Address {
     Address::from_str(include_str!("../tests/fixtures/aval_registry.id").trim()).expect("program id file")
 }
