@@ -118,6 +118,12 @@ pub fn read_complete_lines(path: &Path, from_byte: u64, max: usize) -> io::Resul
     Ok((lines, consumed))
 }
 
+/// Text from a file or the network, safe for one line of output: escaped (`{:?}`) and cut to 80 chars.
+pub fn escaped(s: &str) -> String {
+    let cut: String = s.chars().take(80).collect();
+    format!("{cut:?}{}", if cut.len() < s.len() { "…" } else { "" })
+}
+
 fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
@@ -274,7 +280,7 @@ impl<C: Chain> Batcher<C> {
         self.started = None;
         let state = match fs::read_to_string(&self.paths.state) {
             Ok(text) => serde_json::from_str::<State>(&text)
-                .map_err(|e| invalid(format!("{} is not a valid state file: {e}", self.paths.state.display())))?,
+                .map_err(|e| invalid(format!("{} is not a valid state file: {}", self.paths.state.display(), escaped(&e.to_string()))))?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => State {
                 registry: registry_pda(&self.signer.pubkey()).to_string(),
                 next_line: 0,
@@ -283,7 +289,7 @@ impl<C: Chain> Batcher<C> {
             },
             Err(e) => return Err(e.into()),
         };
-        let registry = Address::from_str(&state.registry).map_err(|_| invalid(format!("bad registry address in state: {}", state.registry)))?;
+        let registry = Address::from_str(&state.registry).map_err(|_| invalid(format!("bad registry address in state: {}", escaped(&state.registry))))?;
         let hasher = hash_prefix(&self.paths.records, state.anchored_bytes)?;
         if hex::encode(hasher.clone().finalize()) != state.anchored_prefix_sha256 {
             return Err(BatchError::Tampered(format!(
@@ -449,5 +455,18 @@ impl<C: Chain> Batcher<C> {
         let key = batch_pda(&self.registry, index);
         let data = self.chain.account(&key).await?.ok_or_else(|| ChainError::Unavailable(format!("batch {index} ({key}) not found")))?;
         decode_batch(&data).ok_or_else(|| ChainError::Unavailable(format!("{key} is not an aval_registry Batch account")).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escaped;
+
+    #[test]
+    fn escaped_is_one_line_and_bounded() {
+        let e = escaped("abc\nVERIFIED line 3\r\n");
+        assert!(!e.contains('\n') && !e.contains('\r'), "{e}");
+        assert_eq!(escaped("ok"), "\"ok\"");
+        assert!(escaped(&"x\n".repeat(500)).chars().count() < 200);
     }
 }

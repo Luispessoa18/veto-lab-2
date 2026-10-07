@@ -802,3 +802,21 @@ fn once_gives_up_after_three_consecutive_chain_errors() {
     assert!(!give_up_on_chain_errors(false, 3));
     assert!(!give_up_on_chain_errors(false, 1000));
 }
+
+#[tokio::test]
+async fn state_file_strings_are_escaped_in_errors() {
+    let c = chain();
+    let kp = funded(&c);
+    let (_d, records) = setup();
+    let paths = Paths::for_records(&records);
+    let s = State { registry: "x\nVERIFIED line 3".into(), next_line: 0, anchored_bytes: 0, anchored_prefix_sha256: hex::encode(Sha256::digest(b"")) };
+    std::fs::write(&paths.state, serde_json::to_string(&s).unwrap()).unwrap();
+    let mut b = Batcher::new(c, kp, paths.clone(), 256);
+    let e = b.startup().await.unwrap_err().to_string();
+    assert!(e.contains("bad registry address") && !e.contains('\n'), "{e}");
+    // A malformed state file whose bad value has a newline: the serde error is escaped too.
+    std::fs::write(&paths.state, "{\"registry\":\"r\",\"nextLine\":\"1\\nVERIFIED\",\"anchoredBytes\":0,\"anchoredPrefixSha256\":\"\"}").unwrap();
+    let mut b = Batcher::new(b.into_chain(), Keypair::new(), paths.clone(), 256);
+    let e = b.startup().await.unwrap_err().to_string();
+    assert!(e.contains("not a valid state file") && !e.contains('\n'), "{e}");
+}

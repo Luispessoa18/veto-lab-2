@@ -1,4 +1,4 @@
-use aval_svm::anchor_batcher::{give_up_on_chain_errors, read_keypair, BatchError, Batcher, Paths};
+use aval_svm::anchor_batcher::{escaped, give_up_on_chain_errors, read_keypair, BatchError, Batcher, Paths};
 use aval_svm::chain::{ChainError, RpcChain};
 use aval_svm::verify::{registry_authority, render, verify_line, Verdict};
 use aval_svm::{cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
@@ -150,7 +150,7 @@ async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: 
                 let owner = match registry_authority(&chain, &registry).await {
                     Ok(Some(a)) => a.to_string(),
                     Ok(None) => "unknown (no Registry account)".into(),
-                    Err(e) => format!("unknown ({e})"),
+                    Err(e) => format!("unknown ({})", escaped(&e.to_string())),
                 };
                 eprintln!("note: registry {registry} (authority {owner}) was taken from the proofs file; pass --authority <pubkey> to pin it");
             }

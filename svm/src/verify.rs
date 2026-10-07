@@ -2,7 +2,7 @@
 //! the aval_registry program. Nothing from the proofs file is trusted on its own: the leaf is
 //! recomputed from the line's bytes, the proof must fold to a root the chain holds, the line
 //! must sit inside that Batch's range, and the proof's shape must be the one for that position.
-use crate::anchor_batcher::{BatchError, ProofLine};
+use crate::anchor_batcher::{escaped, BatchError, ProofLine};
 use crate::chain::Chain;
 use crate::merkle::{self, Step};
 use crate::registry_client::{batch_pda, decode_batch, decode_registry, registry_pda};
@@ -73,10 +73,7 @@ fn h32(s: &str) -> Option<[u8; 32]> {
 fn shown(s: &str) -> String {
     match h32(s) {
         Some(h) => hex::encode(h),
-        None => {
-            let cut: String = s.chars().take(80).collect();
-            format!("{cut:?}{}", if cut.len() < s.len() { "…" } else { "" })
-        }
+        None => escaped(s),
     }
 }
 
