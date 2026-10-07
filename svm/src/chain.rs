@@ -45,6 +45,16 @@ fn rejected_from(err: &Value, msg: &Value) -> ChainError {
     ChainError::Rejected { code, message }
 }
 
+/// Classifies an error from the cluster: only a definitive TransactionError is a rejection.
+/// A missing `err` (node behind, rate limit) or `BlockhashNotFound` is transient, so `Unavailable`.
+fn classify(err: &Value, msg: &Value) -> ChainError {
+    if err.is_null() || err.as_str() == Some("BlockhashNotFound") {
+        let m = msg.as_str().map(str::to_string).unwrap_or_else(|| err.to_string());
+        return ChainError::Unavailable(if err.is_null() { m } else { "blockhash not found".into() });
+    }
+    rejected_from(err, msg)
+}
+
 fn unavail(e: SourceError) -> ChainError {
     ChainError::Unavailable(e.to_string())
 }
@@ -134,7 +144,7 @@ impl Chain for RpcChain {
         let sig = match self.up.call("sendTransaction", json!([raw, {"encoding": "base64", "preflightCommitment": "confirmed"}])).await {
             Ok(v) => v.as_str().unwrap_or_default().to_string(),
             // Preflight failures come back as a JSON-RPC error whose data.err is the TransactionError.
-            Err(SourceError::Rpc(e)) => return Err(rejected_from(&e["data"]["err"], &e["message"])),
+            Err(SourceError::Rpc(e)) => return Err(classify(&e["data"]["err"], &e["message"])),
             Err(e) => return Err(ChainError::Unavailable(e.to_string())),
         };
         if sig.is_empty() {
@@ -147,7 +157,7 @@ impl Chain for RpcChain {
             let s = &st["value"][0];
             if !s.is_null() {
                 if !s["err"].is_null() {
-                    return Err(rejected_from(&s["err"], &json!("transaction failed")));
+                    return Err(classify(&s["err"], &json!("transaction failed")));
                 }
                 if matches!(s["confirmationStatus"].as_str(), Some("confirmed" | "finalized")) {
                     return Ok(sig);
@@ -267,11 +277,38 @@ mod tests {
         assert!(matches!(r, Err(ChainError::Rejected { code: Some(6000), .. })), "{r:?}");
     }
 
+    async fn preflight_error(server: &MockServer, error: Value) {
+        mock(server, "getLatestBlockhash", json!({"context": {"slot": 1}, "value": {"blockhash": Hash::new_from_array([3; 32]).to_string(), "lastValidBlockHeight": 100}})).await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "sendTransaction"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"jsonrpc": "2.0", "id": 1, "error": error})))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn rpc_error_without_data_err_is_unavailable() {
+        let server = MockServer::start().await;
+        preflight_error(&server, json!({"code": -32005, "message": "Node is behind"})).await;
+        let kp = Keypair::new();
+        let r = rpc(&server).send(ix_for(&kp), &kp).await;
+        assert!(matches!(r, Err(ChainError::Unavailable(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn rpc_preflight_blockhash_not_found_is_unavailable() {
+        let server = MockServer::start().await;
+        preflight_error(&server, json!({"code": -32002, "message": "Blockhash not found", "data": {"err": "BlockhashNotFound"}})).await;
+        let kp = Keypair::new();
+        let r = rpc(&server).send(ix_for(&kp), &kp).await;
+        assert!(matches!(r, Err(ChainError::Unavailable(_))), "{r:?}");
+    }
+
     #[tokio::test]
     async fn rpc_other_transaction_error_has_no_code() {
         let server = MockServer::start().await;
         mock_send_prereqs(&server).await;
-        mock(&server, "getSignatureStatuses", json!({"context": {"slot": 2}, "value": [{"err": "BlockhashNotFound", "confirmationStatus": "confirmed"}]})).await;
+        mock(&server, "getSignatureStatuses", json!({"context": {"slot": 2}, "value": [{"err": "InsufficientFundsForFee", "confirmationStatus": "confirmed"}]})).await;
         let kp = Keypair::new();
         let r = rpc(&server).send(ix_for(&kp), &kp).await;
         assert!(matches!(r, Err(ChainError::Rejected { code: None, .. })), "{r:?}");
