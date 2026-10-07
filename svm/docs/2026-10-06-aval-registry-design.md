@@ -109,38 +109,74 @@ aval-svm anchor --records <records.jsonl> --keypair <file> [--upstream <rpc>]
 - First run: sends `init_registry` if the Registry PDA doesn't exist.
 - Restart: recompute sha256 of the file's first `anchoredBytes` bytes; if it
   differs from `anchoredPrefixSha256`, or the file is shorter, **refuse to run**
-  and print that anchored history was modified. Also refuse if the on-chain
-  `registry.next_record` differs from `nextLine` (state and chain disagree),
-  printing both numbers.
+  and print that anchored history was modified. Then compare the on-chain
+  `registry.next_record` with `nextLine`:
+  - chain **behind** the state: refuse to run (state and chain disagree),
+    printing both numbers;
+  - chain **ahead** of the state (a batch landed but the state write was lost,
+    e.g. a crash): recover rather than refuse. Search the Batch accounts
+    backwards from `registry.next_batch - 1` for the one whose
+    `first_record == nextLine`, read the next `count` complete lines, and
+    compare their Merkle root with the Batch's root. If root and count match,
+    the batch is ours: write its proofs and advance the state, keeping the real
+    transaction signature when a proof line from before the crash still holds
+    it (otherwise the `tx` field is `"recovered"`). If they do not match, refuse
+    and print both numbers.
 - Transport: blockhash via `getLatestBlockhash`, signed legacy transaction,
   `sendTransaction` (base64), `getSignatureStatuses` until `confirmed` or the
-  blockhash expires; on expiry, rebuild and resend the same batch (same
-  `first_record`, so a double-land is impossible — the second fails
-  `NonContiguous`, which the batcher treats as "already landed" only after
-  confirming the Batch account holds the same root).
+  blockhash expires. An `Unavailable` outcome (RPC down, blockhash expired, not
+  confirmed in time) leaves nothing written; the next tick re-reads the Registry
+  and decides again, so a transaction that landed late is found by that read
+  rather than resent blindly. A `NonContiguous` rejection (6001) or a seeds
+  constraint failure (2006, the Batch PDA for a stale `next_batch`) means our
+  view was stale: the batcher re-reads the Registry and, if the chain is ahead,
+  runs the recovery above; if the chain still matches the state, the error is
+  surfaced.
+- `--once` anchors what is pending and exits; after 3 consecutive chain errors
+  it gives up and exits with code 2. The long-running mode retries forever.
 - The keypair is read from a file path, never printed, never written anywhere.
+  The batcher derives the Registry PDA from the keypair and refuses at startup,
+  client-side, if the Registry's recorded authority is not that keypair.
 
 ## Verifier `aval-svm verify`
 
 ```
 aval-svm verify --records <records.jsonl> --line N [--proofs <file>] [--upstream <rpc>]
+                [--authority <pubkey>]
 ```
 
 Reads line N, its proof entry, recomputes leaf → root, derives the Batch PDA,
-fetches it over RPC, and checks: root equal, `first_record ≤ N < first_record+count`,
-registry matches. Output: `VERIFIED line N — batch k, slot S, <unix time>, tx <sig>`
-or `NOT VERIFIED: <the first check that failed>` (non-zero exit code).
+fetches it over RPC at `finalized` commitment (the batcher itself uses
+`confirmed`), and checks: root equal, `first_record ≤ N < first_record+count`,
+registry matches. Nothing in the proofs file is trusted on its own:
+the leaf is recomputed from the line's bytes, and the proof's shape must be the
+one for line N's position in the batch (`expected_sides` for `count` and
+`N − first_record`), so a valid proof for another position cannot be passed off.
+
+`--authority` pins the registry: the registry must be the PDA of that authority,
+instead of whatever the proofs file names. Without it, the registry comes from the
+proofs file and a note on stderr says so.
+
+Output: `VERIFIED line N — batch k, slot S, <RFC 3339 time>, tx <sig|unknown (recovered after restart)>, registry <pda> (authority <pubkey|unknown>)`
+(authority read from the on-chain Registry account) or `NOT VERIFIED: <the first check that failed>`.
+Anything taken from the proofs file that is printed is hex-canonicalised or
+escaped and truncated, so the output is always exactly one line and a forged file
+cannot print a fake `VERIFIED`.
+
+Exit codes: `0` verified; `1` not verified; `2` could not check (I/O, RPC
+unreachable, bad arguments).
 `POST /v1/verify` on the server is optional and out of scope for Oct 8.
 
 ## Errors
 
 | Situation | Behaviour |
 |---|---|
-| RPC down / tx not confirmed | batch stays pending, retried next tick; nothing written to proofs/state |
+| RPC down / tx not confirmed | batch stays pending, retried next tick (the Registry is re-read first); nothing written to proofs/state. `--once` exits 2 after 3 in a row |
 | Anchored prefix modified or file truncated | refuse to run, explain, exit non-zero |
-| State vs chain mismatch | refuse to run, print both counters |
+| State vs chain: chain behind the state | refuse to run, print both counters |
+| State vs chain: chain ahead of the state | recover the landed batch if root and count match the pending lines; otherwise refuse and print both counters |
 | Malformed JSON line | anchored as bytes anyway (the attestation is of what was written, not of its validity) |
-| Wrong keypair (not the registry authority) | program rejects `Unauthorized`; batcher exits with that message |
+| Wrong keypair (not the registry authority) | refused at startup, client-side, before any transaction is sent (the program would also reject `Unauthorized`) |
 
 ## Testing
 
@@ -148,8 +184,8 @@ or `NOT VERIFIED: <the first check that failed>` (non-zero exit code).
    leaf, tampered leaf / swapped sibling / wrong side fail, leaf-vs-inner
    prefix separation.
 2. Program in LiteSVM (compiled `.so` committed at
-   `svm/tests/fixtures/aval_registry.so`, with its sha256 checked by a test
-   against `registry/target/deploy`'s build when present): init; two contiguous
+   `svm/tests/fixtures/aval_registry.so`, pinned by a committed sha256 file that
+   a test checks the `.so` against): init; two contiguous
    batches; gap → `NonContiguous`; replay → `NonContiguous`; zero count →
    `EmptyBatch`; wrong signer → `Unauthorized`; account fields decode as written.
 3. Batcher + verifier end to end in LiteSVM through a test RPC shim or a
@@ -171,5 +207,9 @@ use the committed `.so`.
   encoding tests against the real compiled program.
 - Devnet airdrop limits for deploy rent (~1–2 SOL for the program) — fallback:
   faucet.solana.com or a teammate's devnet SOL.
-- A batcher operator can withhold lines (never anchor them). Detectable only by
-  comparing the proofs file with the records file; out of scope.
+- A batcher operator can leave the tail of the file unanchored, or alter lines
+  that have not been anchored yet. Neither is visible on chain until the lines
+  are anchored; it is detectable only by comparing the records file with the
+  proofs file. Gaps in the middle are impossible: batches are contiguous, so
+  anything anchored is anchored in order and an anchored line cannot change. Out
+  of scope for Oct 8.
