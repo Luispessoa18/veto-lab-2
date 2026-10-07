@@ -6,7 +6,8 @@
 //! Durability order: the batch lands on chain, then the proofs are appended and fsync'd,
 //! then the state is replaced atomically (temp + rename + dir fsync). A crash anywhere in
 //! between leaves the chain ahead of the state; the next run finds the landed Batch account
-//! by `first_record`, checks it holds the same root, and writes proofs/state as "recovered".
+//! by `first_record`, checks it holds the same root, and writes proofs/state (reusing the tx
+//! signature from proof lines written before the crash, else "recovered").
 use crate::chain::{Chain, ChainError};
 use crate::merkle::{self, Side};
 use crate::registry_client::{
@@ -188,6 +189,33 @@ fn truncate_proofs_from(path: &Path, from_line: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// The `tx` of the complete proof line for `line` in batch `index` with root `root_hex`, if any.
+fn landed_tx(path: &Path, line: u64, index: u64, root_hex: &str) -> io::Result<Option<String>> {
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(bytes
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|chunk| chunk.last() == Some(&b'\n'))
+        .filter_map(|chunk| serde_json::from_slice::<ProofLine>(chunk).ok())
+        .find(|p| p.line == line && p.batch == index && p.root == root_hex && p.tx != "recovered")
+        .map(|p| p.tx))
+}
+
+/// Reads a Solana CLI keypair file (a JSON array of 64 bytes). Errors never echo the file's contents.
+pub fn read_keypair(path: &Path) -> anyhow::Result<Keypair> {
+    let text = fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read keypair file {}: {}", path.display(), e.kind()))?;
+    let bytes: Vec<u8> = serde_json::from_str(&text)
+        .map_err(|_| anyhow::anyhow!("keypair file {} is not a JSON array of 64 bytes", path.display()))?;
+    if bytes.len() != 64 {
+        anyhow::bail!("keypair file {} holds {} bytes, expected 64", path.display(), bytes.len());
+    }
+    Keypair::try_from(bytes.as_slice())
+        .map_err(|_| anyhow::anyhow!("keypair file {} is not a valid ed25519 keypair (public half does not match the secret)", path.display()))
+}
+
 /// Lines read from the records file for one batch.
 struct Pending {
     lines: Vec<Vec<u8>>,
@@ -273,6 +301,9 @@ impl<C: Chain> Batcher<C> {
             // Someone else's registry that does not exist: we cannot create it.
             None => return Err(BatchError::Unauthorized),
         };
+        if reg.authority != self.signer.pubkey() {
+            return Err(BatchError::Unauthorized);
+        }
         if reg.next_record < state.next_line {
             return Err(BatchError::StateMismatch { state: state.next_line, chain: reg.next_record });
         }
@@ -345,7 +376,10 @@ impl<C: Chain> Batcher<C> {
         if p.root != batch.root {
             return Err(mismatch);
         }
-        self.commit(state, index, p, "recovered".into(), true)
+        // A crash between "proofs written" and "state written" left this batch's proof lines
+        // behind; they carry the real signature, which beats "recovered".
+        let tx = landed_tx(&self.paths.proofs, state.next_line, index, &hex::encode(batch.root))?.unwrap_or_else(|| "recovered".into());
+        self.commit(state, index, p, tx, true)
     }
 
     /// Proofs first (appended, fsync'd), then the state (atomic replace).

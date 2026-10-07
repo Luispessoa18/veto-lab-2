@@ -1,3 +1,6 @@
+use aval_svm::anchor_batcher::{read_keypair, BatchError, Batcher, Paths};
+use aval_svm::chain::RpcChain;
+use aval_svm::verify::{rfc3339, verify_line, Verdict};
 use aval_svm::{cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
 use clap::{Parser, Subcommand};
 use solana_address::Address;
@@ -36,6 +39,106 @@ enum Cmd {
         #[arg(long, default_value_t = 150)]
         delay_ms: u64,
     },
+    /// Anchor Merkle roots of new record lines in the aval_registry program.
+    Anchor {
+        #[arg(long)]
+        records: PathBuf,
+        /// Solana CLI keypair file of the registry authority (never printed).
+        #[arg(long)]
+        keypair: PathBuf,
+        #[arg(long, default_value = DEFAULT_UPSTREAM)]
+        upstream: String,
+        #[arg(long, default_value_t = 30)]
+        interval_secs: u64,
+        #[arg(long, default_value_t = 256)]
+        max_batch: usize,
+        /// Anchor what is pending, then exit.
+        #[arg(long)]
+        once: bool,
+    },
+    /// Prove one record line against the batch roots on chain.
+    Verify {
+        #[arg(long)]
+        records: PathBuf,
+        #[arg(long)]
+        line: u64,
+        /// Defaults to <records>.proofs.jsonl.
+        #[arg(long)]
+        proofs: Option<PathBuf>,
+        #[arg(long, default_value = DEFAULT_UPSTREAM)]
+        upstream: String,
+        /// Registry authority pubkey; pins the registry instead of trusting the proofs file.
+        #[arg(long)]
+        authority: Option<String>,
+    },
+}
+
+const DEFAULT_UPSTREAM: &str = "https://api.devnet.solana.com";
+const UPSTREAM_TIMEOUT_MS: u64 = 30_000;
+
+fn rpc_chain(url: &str) -> RpcChain {
+    RpcChain::new(Upstream::new(url, "confirmed", UPSTREAM_TIMEOUT_MS))
+}
+
+async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_secs: u64, max_batch: usize, once: bool) -> anyhow::Result<()> {
+    let signer = read_keypair(&keypair)?;
+    let interval = Duration::from_secs(interval_secs.max(1));
+    let mut b = Batcher::new(rpc_chain(&upstream), signer, Paths::for_records(&records), max_batch);
+    loop {
+        match b.startup().await {
+            Ok(()) => break,
+            Err(BatchError::Chain(e)) => {
+                eprintln!("chain error at startup (retrying in {}s): {e}", interval.as_secs());
+                tokio::time::sleep(interval).await;
+            }
+            Err(e) => fatal(e),
+        }
+    }
+    eprintln!("anchoring {} into registry {} via {upstream}", records.display(), b.registry());
+    loop {
+        match b.anchor_pending().await {
+            Ok(Some(a)) => {
+                println!("anchored batch {}: lines {}..{} tx {}", a.index, a.first_line, a.first_line + a.count as u64, a.tx);
+                // A full batch means more may be waiting; otherwise batch up for one interval.
+                if once || a.count as usize >= max_batch {
+                    continue;
+                }
+                tokio::time::sleep(interval).await;
+            }
+            Ok(None) if once => break,
+            Ok(None) => tokio::time::sleep(interval).await,
+            Err(BatchError::Chain(e)) => {
+                eprintln!("chain error (retrying in {}s): {e}", interval.as_secs());
+                tokio::time::sleep(interval).await;
+            }
+            Err(e) => fatal(e),
+        }
+    }
+    Ok(())
+}
+
+fn fatal(e: BatchError) -> ! {
+    eprintln!("error: {e}");
+    std::process::exit(1);
+}
+
+async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: String, authority: Option<String>) -> anyhow::Result<()> {
+    let authority = authority.map(|a| Address::from_str(&a).map_err(|_| anyhow::anyhow!("--authority {a} is not a valid pubkey"))).transpose()?;
+    let proofs = proofs.unwrap_or_else(|| Paths::for_records(&records).proofs);
+    let verdict = verify_line(&rpc_chain(&upstream), &records, &proofs, line, authority.as_ref()).await?;
+    match verdict {
+        Verdict::Verified { line, batch, slot, unix_timestamp, tx } => {
+            println!("VERIFIED line {line} — batch {batch}, slot {slot}, {}, tx {tx}", rfc3339(unix_timestamp));
+            if authority.is_none() {
+                eprintln!("note: the registry was taken from the proofs file; pass --authority <pubkey> to pin it");
+            }
+            Ok(())
+        }
+        Verdict::NotVerified(reason) => {
+            println!("NOT VERIFIED: {reason}");
+            std::process::exit(1);
+        }
+    }
 }
 
 const DEFAULT_PRELOAD: [&str; 4] = [
@@ -53,6 +156,8 @@ async fn main() -> anyhow::Result<()> {
             let d = aval_svm::decode::decode(&tx, aval_svm::decode::Encoding::Base64)?;
             println!("{}", d.digest);
         }
+        Cmd::Anchor { records, keypair, upstream, interval_secs, max_batch, once } => anchor(records, keypair, upstream, interval_secs, max_batch, once).await?,
+        Cmd::Verify { records, line, proofs, upstream, authority } => verify(records, line, proofs, upstream, authority).await?,
         Cmd::Shadow { upstream, count, slot, out, delay_ms } => aval_svm::shadow::run(&upstream, count, slot, &out, delay_ms).await?,
         Cmd::Serve { config } => {
             let c = Config::load(Some(&config))?;

@@ -64,6 +64,25 @@ pub fn proof(leaves: &[[u8; 32]], mut index: usize) -> Vec<Step> {
     steps
 }
 
+/// The side of every step in the proof for leaf `index` of a `count`-leaf tree. A proof does
+/// not bind its leaf's position by itself (an unpaired node is promoted without a step), so a
+/// verifier compares the proof's sides with these to tie the proof to one position.
+pub fn expected_sides(count: usize, mut index: usize) -> Vec<Side> {
+    let (mut sides, mut len) = (Vec::new(), count);
+    while len > 1 {
+        if index.is_multiple_of(2) {
+            if index + 1 < len {
+                sides.push(Side::Right);
+            }
+        } else {
+            sides.push(Side::Left);
+        }
+        index /= 2;
+        len = len.div_ceil(2);
+    }
+    sides
+}
+
 pub fn verify(leaf: [u8; 32], proof: &[Step], root: [u8; 32]) -> bool {
     let acc = proof.iter().fold(leaf, |acc, step| match step.side {
         Side::Left => node(&step.hash, &acc),
@@ -116,6 +135,34 @@ mod tests {
                 if n > 1 {
                     let j = (i + 1) % n;
                     assert!(!verify(l[j], &p, r), "proof of {i} must not verify {j} (n={n})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expected_sides_match_every_generated_proof() {
+        for n in 1usize..=40 {
+            let l = leaves(n);
+            for i in 0..n {
+                let sides: Vec<Side> = proof(&l, i).iter().map(|s| s.side).collect();
+                assert_eq!(expected_sides(n, i), sides, "n={n} i={i}");
+            }
+        }
+        assert!(expected_sides(1, 0).is_empty());
+        assert_eq!(expected_sides(3, 2), [Side::Left]);
+        assert_eq!(expected_sides(3, 0), [Side::Right, Side::Right]);
+        assert_eq!(expected_sides(5, 4), [Side::Left]);
+    }
+
+    #[test]
+    fn expected_sides_differ_between_positions() {
+        for n in [2usize, 3, 5, 7, 8, 9] {
+            for i in 0..n {
+                for j in 0..n {
+                    if i != j {
+                        assert_ne!(expected_sides(n, i), expected_sides(n, j), "n={n} {i} vs {j}");
+                    }
                 }
             }
         }

@@ -310,7 +310,7 @@ async fn crash_recovery_drops_duplicate_proof_lines_written_before_the_crash() {
     let mut b = Batcher::new(b.into_chain(), kp2, paths.clone(), 256);
     b.startup().await.unwrap();
     let a = b.anchor_pending().await.unwrap().unwrap();
-    assert_eq!(a.tx, "recovered");
+    assert_ne!(a.tx, "recovered", "the real signature survives in the truncated proof lines");
     let lines: Vec<u64> = proofs(&paths).iter().map(|p| p.line).collect();
     assert_eq!(lines, (0..8).collect::<Vec<_>>());
     assert_proofs_verify(b.chain(), &paths, &reg);
@@ -354,7 +354,8 @@ async fn wrong_signer_is_unauthorized_and_writes_nothing() {
     std::fs::write(&paths.state, serde_json::to_string(&s).unwrap()).unwrap();
     let before = snapshot(&paths);
     let mut b = Batcher::new(c, b_kp, paths.clone(), 256);
-    b.startup().await.unwrap();
+    let r = b.startup().await;
+    assert!(matches!(r, Err(BatchError::Unauthorized)), "{r:?}");
     let r = b.anchor_pending().await;
     assert!(matches!(r, Err(BatchError::Unauthorized)), "{r:?}");
     assert_eq!(snapshot(&paths), before);
@@ -461,4 +462,296 @@ async fn init_registry_on_first_run() {
     assert_eq!((r.next_batch, r.next_record), (0, 0));
     assert_eq!(b.registry(), reg);
     let _ = Address::from_str(&reg.to_string()).unwrap();
+}
+
+// ------------------------------------------------- hardening (Task 6 rulings C, D, E)
+
+#[tokio::test]
+async fn wrong_signer_with_nothing_pending_is_unauthorized_at_startup() {
+    let c = chain();
+    let a = funded(&c);
+    let b_kp = funded(&c);
+    let reg_a = registry_pda(&a.pubkey());
+    c.send(vec![init_registry_ix(&a.pubkey())], &a).await.unwrap();
+    let (_d, records) = setup();
+    let paths = Paths::for_records(&records);
+    let s = State { registry: reg_a.to_string(), next_line: 0, anchored_bytes: 0, anchored_prefix_sha256: hex::encode(Sha256::digest(b"")) };
+    std::fs::write(&paths.state, serde_json::to_string(&s).unwrap()).unwrap();
+    let mut b = Batcher::new(c, b_kp, paths.clone(), 256);
+    let r = b.startup().await;
+    assert!(matches!(r, Err(BatchError::Unauthorized)), "{r:?}");
+    assert!(!paths.proofs.exists());
+}
+
+#[tokio::test]
+async fn crash_between_proofs_and_state_keeps_the_real_signature() {
+    let (_d, paths, c, kp) = anchored_five().await;
+    let kp2 = kp.insecure_clone();
+    append_records(&paths.records, 5..8);
+    let state_before = std::fs::read(&paths.state).unwrap();
+    let mut b = Batcher::new(c, kp, paths.clone(), 256);
+    b.startup().await.unwrap();
+    let real = b.anchor_pending().await.unwrap().unwrap().tx;
+    assert_ne!(real, "recovered");
+    std::fs::write(&paths.state, state_before).unwrap();
+    let mut b = Batcher::new(b.into_chain(), kp2, paths.clone(), 256);
+    b.startup().await.unwrap();
+    let a = b.anchor_pending().await.unwrap().unwrap();
+    assert_eq!((a.index, a.first_line, a.count), (1, 5, 3));
+    assert_eq!(a.tx, real);
+    let txs: Vec<String> = proofs(&paths).into_iter().filter(|p| p.line >= 5).map(|p| p.tx).collect();
+    assert_eq!(txs, vec![real.clone(); 3]);
+}
+
+#[tokio::test]
+async fn crlf_record_line_is_anchored_and_verified_on_its_exact_bytes() {
+    let c = chain();
+    let kp = funded(&c);
+    let (_d, records) = setup();
+    append(&records, &format!("{}\r\n{}\n", record(0), record(1)));
+    let paths = Paths::for_records(&records);
+    let mut b = Batcher::new(c, kp, paths.clone(), 256);
+    b.startup().await.unwrap();
+    b.anchor_pending().await.unwrap().unwrap();
+    let p = &proofs(&paths)[0];
+    assert_eq!(p.leaf, hex::encode(merkle::leaf(format!("{}\r", record(0)).as_bytes())));
+    for line in 0..2 {
+        let v = verify_line(b.chain(), &paths.records, &paths.proofs, line, None).await.unwrap();
+        assert!(matches!(v, Verdict::Verified { batch: 0, .. }), "line {line}: {v:?}");
+    }
+}
+
+#[tokio::test]
+async fn partial_last_line_survives_a_restart_unanchored() {
+    let c = chain();
+    let kp = funded(&c);
+    let kp2 = kp.insecure_clone();
+    let (_d, records) = setup();
+    append_records(&records, 0..3);
+    let partial = record(3);
+    let (head, tail) = partial.split_at(12);
+    append(&records, head);
+    let paths = Paths::for_records(&records);
+    let mut b = Batcher::new(c, kp, paths.clone(), 256);
+    b.startup().await.unwrap();
+    assert_eq!(b.anchor_pending().await.unwrap().unwrap().count, 3);
+    let mut b = Batcher::new(b.into_chain(), kp2, paths.clone(), 256);
+    b.startup().await.unwrap();
+    assert!(b.anchor_pending().await.unwrap().is_none(), "partial line must not be anchored after a restart");
+    let v = verify_line(b.chain(), &paths.records, &paths.proofs, 3, None).await.unwrap();
+    assert_eq!(v, Verdict::NotVerified("no proof for line 3".into()));
+    append(&records, &format!("{tail}\n"));
+    let a = b.anchor_pending().await.unwrap().unwrap();
+    assert_eq!((a.index, a.first_line, a.count), (1, 3, 1));
+    let v = verify_line(b.chain(), &paths.records, &paths.proofs, 3, None).await.unwrap();
+    assert!(matches!(v, Verdict::Verified { line: 3, batch: 1, .. }), "{v:?}");
+}
+
+// ------------------------------------------------- verifier
+
+use aval_svm::verify::{rfc3339, verify_line, Verdict};
+
+/// Two batches: lines 0..5 in batch 0, lines 5..8 in batch 1.
+async fn anchored_two_batches() -> (tempfile::TempDir, Paths, LiteSvmChain, Keypair) {
+    let (d, paths, c, kp) = anchored_five().await;
+    let kp2 = kp.insecure_clone();
+    append_records(&paths.records, 5..8);
+    let mut b = Batcher::new(c, kp, paths.clone(), 256);
+    b.startup().await.unwrap();
+    b.anchor_pending().await.unwrap().unwrap();
+    (d, paths, b.into_chain(), kp2)
+}
+
+fn rewrite_proofs(paths: &Paths, f: impl Fn(Vec<ProofLine>) -> Vec<ProofLine>) {
+    let out: String = f(proofs(paths)).iter().map(|p| serde_json::to_string(p).unwrap() + "\n").collect();
+    std::fs::write(&paths.proofs, out).unwrap();
+}
+
+fn not_verified(v: Verdict) -> String {
+    match v {
+        Verdict::NotVerified(m) => m,
+        other => panic!("expected NOT VERIFIED, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn every_anchored_line_verifies_with_its_batch() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let reg = registry_pda(&kp.pubkey());
+    let txs: Vec<String> = proofs(&paths).into_iter().map(|p| p.tx).collect();
+    for line in 0..8u64 {
+        let v = verify_line(&c, &paths.records, &paths.proofs, line, None).await.unwrap();
+        let want_batch = if line < 5 { 0 } else { 1 };
+        let b = batch_of(&c, &reg, want_batch);
+        assert_eq!(
+            v,
+            Verdict::Verified { line, batch: want_batch, slot: b.slot, unix_timestamp: b.unix_timestamp, tx: txs[line as usize].clone() }
+        );
+        // Pinning the registry to the right authority changes nothing.
+        let v2 = verify_line(&c, &paths.records, &paths.proofs, line, Some(&kp.pubkey())).await.unwrap();
+        assert_eq!(v, v2);
+    }
+}
+
+#[tokio::test]
+async fn line_beyond_anchored_has_no_proof() {
+    let (_d, paths, c, _kp) = anchored_two_batches().await;
+    append_records(&paths.records, 8..9);
+    let v = verify_line(&c, &paths.records, &paths.proofs, 8, None).await.unwrap();
+    assert_eq!(v, Verdict::NotVerified("no proof for line 8".into()));
+    let v = verify_line(&c, &paths.records, &paths.proofs, 1000, None).await.unwrap();
+    assert_eq!(v, Verdict::NotVerified("no proof for line 1000".into()));
+}
+
+#[tokio::test]
+async fn tampered_line_is_not_verified_and_mentions_the_leaf() {
+    let (_d, paths, c, _kp) = anchored_two_batches().await;
+    let text = std::fs::read_to_string(&paths.records).unwrap();
+    std::fs::write(&paths.records, text.replacen("\"n\":6", "\"n\":66", 1)).unwrap();
+    let m = not_verified(verify_line(&c, &paths.records, &paths.proofs, 6, None).await.unwrap());
+    assert!(m.contains("leaf"), "{m}");
+    // Untouched lines still verify.
+    assert!(matches!(verify_line(&c, &paths.records, &paths.proofs, 5, None).await.unwrap(), Verdict::Verified { .. }));
+}
+
+#[tokio::test]
+async fn proof_entry_with_a_wrong_root_is_not_verified_and_mentions_the_root() {
+    let (_d, paths, c, _kp) = anchored_two_batches().await;
+    rewrite_proofs(&paths, |mut ps| {
+        ps[2].root = hex::encode([7u8; 32]);
+        ps
+    });
+    let m = not_verified(verify_line(&c, &paths.records, &paths.proofs, 2, None).await.unwrap());
+    assert!(m.contains("root"), "{m}");
+}
+
+#[tokio::test]
+async fn proof_entry_whose_root_and_path_are_consistent_but_not_on_chain_fails() {
+    // A forged single-leaf "batch": root = leaf, empty proof. Folds fine, but the chain disagrees.
+    let (_d, paths, c, _kp) = anchored_two_batches().await;
+    rewrite_proofs(&paths, |mut ps| {
+        ps[2].root = ps[2].leaf.clone();
+        ps[2].proof.clear();
+        ps
+    });
+    let m = not_verified(verify_line(&c, &paths.records, &paths.proofs, 2, None).await.unwrap());
+    assert!(m.contains("root"), "{m}");
+}
+
+#[tokio::test]
+async fn proof_relabelled_to_another_position_is_not_verified() {
+    // Lines 1 and 3 are byte-identical, so line 1's proof folds to the root for line 3's bytes too.
+    let c = chain();
+    let kp = funded(&c);
+    let (_d, records) = setup();
+    for i in [0, 1, 2, 1, 4] {
+        append(&records, &format!("{}\n", record(i)));
+    }
+    let paths = Paths::for_records(&records);
+    let mut b = Batcher::new(c, kp, paths.clone(), 256);
+    b.startup().await.unwrap();
+    b.anchor_pending().await.unwrap().unwrap();
+    let c = b.into_chain();
+    assert!(matches!(verify_line(&c, &records, &paths.proofs, 3, None).await.unwrap(), Verdict::Verified { line: 3, .. }));
+    rewrite_proofs(&paths, |ps| {
+        let mut forged = ps[1].clone();
+        forged.line = 3;
+        ps.into_iter().map(|p| if p.line == 3 { forged.clone() } else { p }).collect()
+    });
+    let m = not_verified(verify_line(&c, &records, &paths.proofs, 3, None).await.unwrap());
+    assert!(m.contains("position"), "{m}");
+}
+
+#[tokio::test]
+async fn line_outside_the_on_chain_batch_range_is_not_verified() {
+    // Claim line 5 sits in batch 0 (which covers 0..5) with batch 0's proof for line 4's position.
+    let c = chain();
+    let kp = funded(&c);
+    let (_d, records) = setup();
+    for i in [0, 1, 2, 3, 4, 4] {
+        append(&records, &format!("{}\n", record(i)));
+    }
+    let paths = Paths::for_records(&records);
+    let mut b = Batcher::new(c, kp, paths.clone(), 5);
+    b.startup().await.unwrap();
+    b.anchor_pending().await.unwrap().unwrap();
+    b.anchor_pending().await.unwrap().unwrap();
+    let c = b.into_chain();
+    rewrite_proofs(&paths, |ps| {
+        let mut forged = ps[4].clone();
+        forged.line = 5;
+        ps.into_iter().map(|p| if p.line == 5 { forged.clone() } else { p }).collect()
+    });
+    let m = not_verified(verify_line(&c, &records, &paths.proofs, 5, None).await.unwrap());
+    assert!(m.contains("range") || m.contains("outside"), "{m}");
+}
+
+#[tokio::test]
+async fn authority_pins_the_registry() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    // Another authority anchors the very same first batch in its own registry.
+    let other = funded(&c);
+    let other_reg = registry_pda(&other.pubkey());
+    c.send(vec![init_registry_ix(&other.pubkey())], &other).await.unwrap();
+    let root = h32(&proofs(&paths)[0].root);
+    c.send(vec![anchor_batch_ix(&other.pubkey(), &other_reg, 0, root, 0, 5)], &other).await.unwrap();
+    rewrite_proofs(&paths, |ps| {
+        ps.into_iter()
+            .map(|mut p| {
+                p.registry = other_reg.to_string();
+                p
+            })
+            .collect()
+    });
+    // Without --authority the proofs file's registry is trusted, and it is a real registry.
+    assert!(matches!(verify_line(&c, &paths.records, &paths.proofs, 1, None).await.unwrap(), Verdict::Verified { .. }));
+    // Pinned to the real authority, the swapped registry is refused.
+    let m = not_verified(verify_line(&c, &paths.records, &paths.proofs, 1, Some(&kp.pubkey())).await.unwrap());
+    assert!(m.contains("registry"), "{m}");
+    // Without --authority, a registry with no such batch fails on chain.
+    rewrite_proofs(&paths, |ps| {
+        ps.into_iter()
+            .map(|mut p| {
+                p.registry = registry_pda(&Keypair::new().pubkey()).to_string();
+                p
+            })
+            .collect()
+    });
+    let m = not_verified(verify_line(&c, &paths.records, &paths.proofs, 1, None).await.unwrap());
+    assert!(m.contains("batch"), "{m}");
+}
+
+#[test]
+fn rfc3339_formats_utc() {
+    assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
+    assert_eq!(rfc3339(1_791_244_800), "2026-10-06T00:00:00Z");
+    assert_eq!(rfc3339(951_782_400 + 3661), "2000-02-29T01:01:01Z");
+    assert_eq!(rfc3339(-1), "1969-12-31T23:59:59Z");
+}
+
+#[test]
+fn read_keypair_round_trips_and_rejects_bad_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let kp = Keypair::new();
+    let path = dir.path().join("id.json");
+    std::fs::write(&path, serde_json::to_string(&kp.to_bytes().to_vec()).unwrap()).unwrap();
+    assert_eq!(read_keypair(&path).unwrap().pubkey(), kp.pubkey());
+
+    let short = dir.path().join("short.json");
+    let bytes = kp.to_bytes();
+    std::fs::write(&short, serde_json::to_string(&bytes[..63].to_vec()).unwrap()).unwrap();
+    let e = read_keypair(&short).unwrap_err().to_string();
+    assert!(e.contains("64"), "{e}");
+
+    let junk = dir.path().join("junk.json");
+    std::fs::write(&junk, "[\"supersecretword\"]").unwrap();
+    let e = read_keypair(&junk).unwrap_err().to_string();
+    assert!(!e.contains("supersecretword"), "no file contents in errors: {e}");
+
+    let mismatched = dir.path().join("mismatch.json");
+    let mut m = kp.to_bytes();
+    m[40] ^= 1;
+    std::fs::write(&mismatched, serde_json::to_string(&m.to_vec()).unwrap()).unwrap();
+    assert!(read_keypair(&mismatched).is_err());
+    assert!(read_keypair(&dir.path().join("missing.json")).is_err());
 }
