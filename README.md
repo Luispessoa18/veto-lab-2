@@ -159,6 +159,12 @@ cd svm && cargo build --release && cd ..
   conta) sai do mesmo cache da simulação — em geral no mesmo slot dela, mas sem garantia; outras
   formas vão para o upstream.
 - Upstream: `AVAL_UPSTREAM_URL` (padrão devnet). Para mainnet use um RPC próprio (Helius etc.).
+- Verificação cruzada (opcional): com `upstream_secondary_url` (ou `AVAL_UPSTREAM_SECONDARY_URL`),
+  toda leitura de contas é feita nos dois provedores e comparada; divergência falha fechado
+  (`-32005`), e um provedor mais de `quorum_max_slot_gap` slots atrás é tratado como indisponível.
+  As contas são conferidas no momento da busca e depois servidas do cache dentro do TTL; contas
+  quentes que mudam a cada slot podem fazer a verificação falhar com mais frequência (falhar
+  fechado é intencional). A resposta traz `aval.upstreams: 2` quando ligada.
 - Medir contra o RPC: `aval-svm shadow --upstream <url> --count 200`.
 - Usa o `Clock` e o `EpochSchedule` do cluster, e verifica os precompiles ed25519/secp256k1.
   Transações maiores que 4096 bytes são recusadas (`-32602`).

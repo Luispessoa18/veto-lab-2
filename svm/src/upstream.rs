@@ -45,11 +45,11 @@ impl Upstream {
             .json(body)
             .send()
             .await
-            .map_err(|e| SourceError::Unavailable(e.to_string()))?;
+            .map_err(|e| SourceError::Unavailable(e.without_url().to_string()))?;
         if !resp.status().is_success() {
             return Err(SourceError::Unavailable(format!("HTTP {}", resp.status())));
         }
-        resp.json().await.map_err(|e| SourceError::Unavailable(e.to_string()))
+        resp.json().await.map_err(|e| SourceError::Unavailable(e.without_url().to_string()))
     }
 
     /// One call; returns `result`, or `SourceError::Rpc(error)`.

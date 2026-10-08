@@ -254,3 +254,14 @@ async fn aval_meta_reports_upstreams_only_when_cross_checked() {
     let off = post(app("http://127.0.0.1:9").await, "/", body).await;
     assert!(off["result"]["aval"].get("upstreams").is_none(), "{off}");
 }
+
+#[tokio::test]
+async fn upstream_url_secret_never_reaches_the_error_message() {
+    use aval_svm::rpc::simulate_result;
+    let (_, raw) = transfer_tx(key(1), key(2), 1);
+    let up = Upstream::new("http://127.0.0.1:9/?api-key=SECRET123", "confirmed", 2000);
+    let engine = Engine::new(Cache::new(up, Duration::from_secs(60)), Pool::new(1, 100));
+    let e = simulate_result(&engine, &json!([B64.encode(&raw), {"encoding": "base64"}])).await.unwrap_err();
+    assert_eq!(e.code, -32005);
+    assert!(!e.message.contains("SECRET123"), "{}", e.message);
+}

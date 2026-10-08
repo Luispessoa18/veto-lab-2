@@ -1,4 +1,8 @@
 //! Cross-checks every account read against a second RPC provider.
+//!
+//! Accounts are cross-checked when fetched and then served from the cache within its TTL.
+//! Hot accounts that change every slot can make the cross-check fail more often; that is
+//! fail-closed by design.
 use crate::source::{AccountSource, SourceError};
 use crate::upstream::Upstream;
 use solana_account::Account;
@@ -35,6 +39,11 @@ impl AccountSource for QuorumSource {
         };
         let (p, s) = tokio::join!(self.primary.get_multiple(keys), secondary.get_multiple(keys));
         let (mut p, mut s) = (p.map_err(|e| label("primary", e))?, s.map_err(|e| label("secondary", e))?);
+        // A provider too far behind is unhealthy, whatever its data says.
+        if p.0.abs_diff(s.0) > self.max_slot_gap {
+            let side = if p.0 < s.0 { "primary" } else { "secondary" };
+            return Err(SourceError::Unavailable(format!("{side} upstream is {} slots behind", p.0.abs_diff(s.0))));
+        }
         let Some(first) = first_difference(&p.1, &s.1) else {
             return Ok((p.0.max(s.0), p.1));
         };
@@ -52,12 +61,6 @@ impl AccountSource for QuorumSource {
         }
         if let Some(i) = first_difference(&p.1, &s.1) {
             return Err(disagree(i, p.0, s.0));
-        }
-        if p.0.abs_diff(s.0) > self.max_slot_gap {
-            return Err(SourceError::Unavailable(format!(
-                "upstreams are {} slots apart (slots {}/{}), more than {}",
-                p.0.abs_diff(s.0), p.0, s.0, self.max_slot_gap
-            )));
         }
         Ok((p.0.max(s.0), p.1))
     }
@@ -176,16 +179,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slot_gap_beyond_limit_after_refetch_is_unavailable() {
+    async fn secondary_beyond_the_gap_is_unhealthy_even_when_data_agrees() {
         let a = server(reply(110, vec![acct(7, "AQI="), Value::Null])).await;
-        // Equal data after the refetch, but the provider still reports a slot 6 behind.
-        let b = MockServer::start().await;
+        let b = server(reply(100, vec![acct(7, "AQI="), Value::Null])).await;
+        let e = quorum(&a, Some(&b), 4).get_multiple(&keys()).await.unwrap_err();
+        let SourceError::Unavailable(m) = e else { panic!("{e:?}") };
+        assert_eq!(m, "secondary upstream is 10 slots behind");
+        assert_eq!(bodies(&b).await.len(), 1, "no refetch");
+    }
+
+    #[tokio::test]
+    async fn primary_beyond_the_gap_is_unhealthy() {
+        let a = server(reply(100, vec![Value::Null, Value::Null])).await;
+        let b = server(reply(110, vec![Value::Null, Value::Null])).await;
+        let e = quorum(&a, Some(&b), 4).get_multiple(&keys()).await.unwrap_err();
+        let SourceError::Unavailable(m) = e else { panic!("{e:?}") };
+        assert_eq!(m, "primary upstream is 10 slots behind");
+    }
+
+    #[tokio::test]
+    async fn lagging_primary_is_refetched_with_min_context_slot() {
+        let b = server(reply(110, vec![acct(7, "AQI="), Value::Null])).await;
+        let a = MockServer::start().await;
         Mock::given(method("POST")).respond_with(|r: &Request| {
             let body: Value = r.body_json().unwrap();
-            let slot = if body["params"][1].get("minContextSlot").is_some() { 104 } else { 100 };
-            reply(slot, vec![acct(if slot == 104 { 7 } else { 1 }, "AQI="), Value::Null])
-        }).mount(&b).await;
-        assert!(quorum(&a, Some(&b), 4).get_multiple(&keys()).await.is_err());
+            if body["params"][1].get("minContextSlot").is_some() {
+                reply(111, vec![acct(7, "AQI="), Value::Null])
+            } else {
+                reply(108, vec![acct(6, "AQI="), Value::Null])
+            }
+        }).mount(&a).await;
+        let (slot, accts) = quorum(&a, Some(&b), 4).get_multiple(&keys()).await.unwrap();
+        assert_eq!((slot, accts[0].as_ref().unwrap().lamports), (111, 7));
+        let sent = bodies(&a).await;
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1]["params"][1]["minContextSlot"], 110);
+        assert_eq!(bodies(&b).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn transport_errors_do_not_leak_the_secondary_url() {
+        let a = server(reply(100, vec![Value::Null, Value::Null])).await;
+        let q = QuorumSource {
+            primary: Upstream::new(&a.uri(), "confirmed", 2000),
+            secondary: Some(Upstream::new("http://127.0.0.1:9/?api-key=SECRET123", "confirmed", 2000)),
+            max_slot_gap: 4,
+        };
+        let e = q.get_multiple(&keys()).await.unwrap_err().to_string();
+        assert!(e.starts_with("upstream unavailable: secondary") && !e.contains("SECRET123"), "{e}");
     }
 
     #[tokio::test]

@@ -104,6 +104,13 @@ A request may pass `"aval": {"fresh": true}` to bypass the cache for plain
 accounts (program entries still follow `program_ttl_ms`). Post-Oct-8,
 `accountSubscribe` keeps hot accounts live and the TTL becomes a fallback.
 
+**Cross-check (optional).** With `upstream_secondary_url` set, each fetch goes to both
+providers and is compared. A provider more than `quorum_max_slot_gap` slots behind is
+unavailable; equal data passes; differing data at equal slots fails; differing data at
+different slots refetches the lagging side once with `minContextSlot`. Accounts are
+cross-checked at fetch time and then served from the cache within the TTL, so hot accounts
+that change every slot can make the check fail more often (fail-closed by design).
+
 **Preloaded at boot.** System, SPL Token, Token-2022, Associated Token, Memo,
 Compute Budget, Stake, Address Lookup Table, and a configurable list
 (`preload_programs`, e.g. Jupiter v6, Orca Whirlpool, Raydium).
