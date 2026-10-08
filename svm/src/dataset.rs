@@ -5,7 +5,7 @@ use crate::cache::Cache;
 use crate::decode::{decode, Encoding};
 use crate::engine::{Engine, EngineError, SimReport};
 use crate::pool::Pool;
-use crate::project::{project, token_mint_owner, Projection};
+use crate::project::{project, token_delegated_amount, token_mint_owner, Projection};
 use crate::shadow::VOTE_PROGRAM;
 use crate::source::SourceError;
 use crate::upstream::Upstream;
@@ -31,6 +31,9 @@ pub struct TxMeta {
 pub struct TokenAccount {
     pub mint: String,
     pub owner: String,
+    /// Amount the delegate may move after the transaction (base units), when a delegate is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegated_amount: Option<String>,
 }
 
 /// One JSON line of the effects file.
@@ -51,6 +54,11 @@ pub struct EffectRecord {
     pub token_accounts: BTreeMap<String, TokenAccount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tx: Option<String>,
+    /// "mainnet" for sampled transactions, "synthetic" for `dataset-synth`.
+    pub source: String,
+    /// Synthetic scenario name (`dataset-synth` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case: Option<String>,
 }
 
 pub fn tx_meta(tx: &VersionedTransaction) -> TxMeta {
@@ -97,7 +105,8 @@ pub fn token_accounts(p: &Projection, pre: &HashMap<Address, Option<Account>>, p
         let found = pre.get(&k).and_then(|a| a.as_ref()).and_then(token_mint_owner)
             .or_else(|| post.get(&k).and_then(token_mint_owner));
         if let Some((mint, owner)) = found {
-            out.insert(acct.clone(), TokenAccount { mint, owner });
+            let delegated_amount = post.get(&k).and_then(token_delegated_amount).map(|n| n.to_string());
+            out.insert(acct.clone(), TokenAccount { mint, owner, delegated_amount });
         }
     }
     out
@@ -132,6 +141,8 @@ pub fn build_record(report: &SimReport, meta: TxMeta, block_slot: u64, tx_b64: O
         fee: o.fee,
         token_accounts: tokens,
         tx: tx_b64.map(String::from),
+        source: "mainnet".into(),
+        case: None,
     })
 }
 
@@ -426,7 +437,7 @@ mod tests {
         assert!(touches_signers(&tok(2), &meta(), 5000, &BTreeMap::new()));
         assert!(!touches_signers(&tok(7), &meta(), 5000, &BTreeMap::new()));
         let approve = Projection { authority: vec![AuthorityChange { account: s(20), field: "delegate".into(), pre: None, post: Some(s(9)) }], ..Default::default() };
-        let owned = BTreeMap::from([(s(20), TokenAccount { mint: s(30), owner: s(1) })]);
+        let owned = BTreeMap::from([(s(20), TokenAccount { mint: s(30), owner: s(1), delegated_amount: None })]);
         assert!(touches_signers(&approve, &meta(), 5000, &owned));
         assert!(!touches_signers(&approve, &meta(), 5000, &BTreeMap::new()));
         let closed = Projection { closed: vec![s(20)], ..Default::default() };
@@ -442,10 +453,11 @@ mod tests {
         let m = TxMeta { programs: vec![s(50)], ..meta() };
         let r = build_record(&report(None, pre.clone(), post.clone()), m.clone(), 777, None).expect("kept");
         assert_eq!((r.slot, r.state_slot, r.units, r.fee), (777, 900, 1234, 5000));
+        assert_eq!((r.source.as_str(), r.case.as_deref()), ("mainnet", None));
         assert_eq!(r.tx_digest, "ab".repeat(32));
         assert_eq!(r.programs, vec![s(50), s(51)]);
         assert_eq!(r.projection, project(&pre.iter().cloned().collect(), &post.iter().cloned().collect()));
-        assert_eq!(r.token_accounts, BTreeMap::from([(acct.to_string(), TokenAccount { mint: mint.to_string(), owner: s(1) })]));
+        assert_eq!(r.token_accounts, BTreeMap::from([(acct.to_string(), TokenAccount { mint: mint.to_string(), owner: s(1), delegated_amount: None })]));
         let v = serde_json::to_value(&r).unwrap();
         assert!(v.get("tx").is_none());
         for f in ["tx_digest", "slot", "signers", "fee_payer", "programs", "projection", "units"] { assert!(v.get(f).is_some(), "{f}"); }
@@ -456,6 +468,20 @@ mod tests {
         let fee_pre = vec![(key(1), Some(Account { lamports: 10_000, ..Account::default() }))];
         let fee_post = vec![(key(1), Account { lamports: 5_000, ..Account::default() })];
         assert!(build_record(&report(None, fee_pre, fee_post), m, 777, None).is_none());
+    }
+
+    #[test]
+    fn approvals_record_the_delegated_amount() {
+        let (acct, mint, user, spender) = (key(20), key(30), key(1), key(9));
+        let mut after = token_account(mint, user);
+        after.data[72] = 1;
+        after.data[76..108].copy_from_slice(spender.as_ref());
+        after.data[121..129].copy_from_slice(&u64::MAX.to_le_bytes());
+        let pre = HashMap::from([(acct, Some(token_account(mint, user)))]);
+        let post = HashMap::from([(acct, after)]);
+        let p = project(&pre, &post);
+        let t = token_accounts(&p, &pre, &post);
+        assert_eq!(t[&acct.to_string()], TokenAccount { mint: mint.to_string(), owner: user.to_string(), delegated_amount: Some(u64::MAX.to_string()) });
     }
 
     #[test]

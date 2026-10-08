@@ -62,6 +62,16 @@ enum Cmd {
         #[arg(long)]
         with_tx: bool,
     },
+    /// Build token-permission transactions locally (approve, set_authority, close, transfer) and
+    /// simulate them over an in-memory state (no network). Same JSONL schema, source "synthetic".
+    DatasetSynth {
+        #[arg(long, default_value_t = 300)]
+        count: usize,
+        #[arg(long, default_value = "results/svm_effects_synth.jsonl")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
     /// Anchor Merkle roots of new record lines in the aval_registry program.
     Anchor {
         #[arg(long)]
@@ -207,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Dataset { upstream, target, out, delay_ms, max_blocks, per_block, with_tx } => {
             aval_svm::dataset::run(&aval_svm::dataset::Args { upstream, target, out, delay_ms, max_blocks, per_block, with_tx }).await?
         }
+        Cmd::DatasetSynth { count, out, seed } => aval_svm::synth::run(count, &out, seed).await?,
         Cmd::Shadow { upstream, count, slot, out, delay_ms } => aval_svm::shadow::run(&upstream, count, slot, &out, delay_ms).await?,
         Cmd::Serve { config } => {
             let c = Config::load(Some(&config))?;
@@ -252,6 +263,17 @@ mod tests {
                 assert_eq!(upstream, "http://u");
                 assert_eq!((target, delay_ms, max_blocks, per_block, with_tx), (1000, 300, 400, 8, false));
                 assert_eq!(out, std::path::PathBuf::from("results/svm_effects.jsonl"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dataset_synth_defaults() {
+        match Cli::try_parse_from(["aval-svm", "dataset-synth"]).unwrap().cmd {
+            Cmd::DatasetSynth { count, out, seed } => {
+                assert_eq!((count, seed), (300, 42));
+                assert_eq!(out, std::path::PathBuf::from("results/svm_effects_synth.jsonl"));
             }
             _ => unreachable!(),
         }

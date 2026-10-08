@@ -12,6 +12,7 @@ pub mod rpc;
 pub mod http;
 pub mod shadow;
 pub mod dataset;
+pub mod synth;
 pub mod merkle;
 pub mod registry_client;
 pub mod chain;

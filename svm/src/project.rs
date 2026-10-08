@@ -59,6 +59,13 @@ pub fn token_mint_owner(a: &Account) -> Option<(String, String)> {
     token_view(a).map(|t| (t.mint.to_string(), t.owner.to_string()))
 }
 
+/// Delegated amount (bytes 121..129) of a token account that has a delegate.
+pub fn token_delegated_amount(a: &Account) -> Option<u64> {
+    let t = token_view(a)?;
+    t.delegate?;
+    Some(u64::from_le_bytes(a.data[121..129].try_into().unwrap()))
+}
+
 /// Mint layout: decimals at byte 44.
 fn decimals_of(mint: &Address, pre: &HashMap<Address, Option<Account>>) -> Option<u8> {
     let m = pre.get(mint)?.as_ref()?;

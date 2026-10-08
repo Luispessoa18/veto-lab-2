@@ -27,6 +27,7 @@ results/aval-svm.log
 results/demo-records.jsonl*
 results/demo-tampered.*
 results/svm_effects.jsonl
+results/svm_effects_synth.jsonl
 results/svm_dataset/
 results/svm_dataset_run.log
 
