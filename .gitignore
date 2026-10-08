@@ -26,6 +26,9 @@ results/aval_shadow.jsonl
 results/aval-svm.log
 results/demo-records.jsonl*
 results/demo-tampered.*
+results/svm_effects.jsonl
+results/svm_dataset/
+results/svm_dataset_run.log
 
 # Anchor (aval-registry)
 registry/target/
