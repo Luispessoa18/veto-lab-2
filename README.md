@@ -183,6 +183,9 @@ algum signatário além da taxa:
 - Retomável: relê o arquivo, pula os `tx_digest` já salvos e continua acrescentando até o
   `--target` (contando o que já existe). 429/erros de rede: espera e tenta de novo; nunca derruba
   a execução. A URL do upstream não é impressa (só o host). `--with-tx` guarda também a transação.
+- Registros antigos sem `decimals` dos tokens: `aval-svm dataset --backfill-decimals --in results/svm_effects.jsonl
+  --out results/svm_effects.v2.jsonl --upstream <url>` lê cada mint uma vez e preenche os decimais (sem
+  re-simular; os demais campos ficam iguais).
 - RPC público (`https://api.mainnet-beta.solana.com`) funciona, mas limita `getBlock`; use
   `--delay-ms 400` ou um RPC próprio.
 

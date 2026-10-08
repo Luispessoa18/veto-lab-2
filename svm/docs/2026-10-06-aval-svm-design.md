@@ -175,6 +175,10 @@ Response:
 Token amounts are strings (u64). The projection covers every writable account
 the transaction touched, and is built by diffing pre/post state. SPL Token and
 Token-2022 accounts are decoded (amount, owner, delegate, close authority).
+`tokens[].owner` is the account's owner **before** the transaction (so an outflow
+stays attributed to whoever lost the tokens even if the same transaction hands the
+account to someone else); for an account created in the transaction it is the new
+owner. An owner change itself shows up in `authority` (`field: "owner"`).
 
 ### Digest
 

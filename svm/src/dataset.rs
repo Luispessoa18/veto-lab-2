@@ -237,6 +237,86 @@ pub fn host_only(url: &str) -> String {
     reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(String::from)).unwrap_or_else(|| "<invalid url>".into())
 }
 
+/// Mints (base58) whose decimals a stored JSON record lacks, sorted and unique.
+pub fn json_missing_mints(rec: &Value) -> Vec<String> {
+    let lacks = |v: &Value| v.get("decimals").is_none_or(Value::is_null);
+    let tokens = rec.pointer("/projection/tokens").and_then(Value::as_array).into_iter().flatten();
+    let accounts = rec.get("token_accounts").and_then(Value::as_object).into_iter().flat_map(|m| m.values());
+    let mut out: Vec<String> = tokens.chain(accounts).filter(|v| lacks(v))
+        .filter_map(|v| v["mint"].as_str().map(String::from)).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Fills missing token decimals from `decimals` (mint → decimals); returns how many were filled.
+/// Every other field is left as it was.
+pub fn json_fill_decimals(rec: &mut Value, decimals: &HashMap<String, u8>) -> usize {
+    let mut filled = 0;
+    let mut fill = |v: &mut Value| {
+        if !v.get("decimals").is_none_or(Value::is_null) { return; }
+        if let Some(d) = v["mint"].as_str().and_then(|m| decimals.get(m)) {
+            v["decimals"] = json!(d);
+            filled += 1;
+        }
+    };
+    if let Some(tokens) = rec.pointer_mut("/projection/tokens").and_then(Value::as_array_mut) {
+        tokens.iter_mut().for_each(&mut fill);
+    }
+    if let Some(accounts) = rec.get_mut("token_accounts").and_then(Value::as_object_mut) {
+        accounts.values_mut().for_each(&mut fill);
+    }
+    filled
+}
+
+/// Rewrites an effects file with token decimals filled from the mint accounts (read once each,
+/// via getMultipleAccounts). No re-simulation; every other field is kept. Unreadable lines and
+/// mints that cannot be read are left as they are.
+pub async fn backfill_decimals(input: &Path, out: &Path, upstream: &str, delay_ms: u64) -> anyhow::Result<()> {
+    use crate::source::AccountSource;
+    anyhow::ensure!(input != out, "--in and --out must differ");
+    let text = std::fs::read_to_string(input)?;
+    let mut lines: Vec<Result<Value, String>> = text.lines().filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).map_err(|_| l.to_string())).collect();
+    let mut mints: Vec<String> = lines.iter().filter_map(|l| l.as_ref().ok()).flat_map(json_missing_mints).collect();
+    mints.sort();
+    mints.dedup();
+    println!("backfill: {} records, {} mints to read from {}", lines.len(), mints.len(), host_only(upstream));
+    let up = Upstream::new(upstream, "confirmed", 30_000);
+    let mut decimals = HashMap::new();
+    for chunk in mints.chunks(crate::cache::MAX_BATCH) {
+        let keys: Vec<Address> = chunk.iter().filter_map(|m| m.parse().ok()).collect();
+        let mut attempt = 0;
+        loop {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            match up.get_multiple(&keys).await {
+                Ok((_, accounts)) => {
+                    for (k, a) in keys.iter().zip(accounts) {
+                        if let Some(d) = a.as_ref().and_then(mint_decimals) { decimals.insert(k.to_string(), d); }
+                    }
+                    break;
+                }
+                Err(e) if attempt < RETRIES => {
+                    eprintln!("getMultipleAccounts: {} — retrying in {:?}", short(&e.to_string()), backoff(attempt));
+                    tokio::time::sleep(backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => { eprintln!("getMultipleAccounts: giving up on {} mints: {}", keys.len(), short(&e.to_string())); break; }
+            }
+        }
+    }
+    let mut filled = 0;
+    let mut f = std::fs::File::create(out)?;
+    for l in lines.iter_mut() {
+        match l {
+            Ok(v) => { filled += json_fill_decimals(v, &decimals); writeln!(f, "{}", serde_json::to_string(v)?)?; }
+            Err(raw) => writeln!(f, "{raw}")?,
+        }
+    }
+    println!("backfill: {} of {} mints resolved, {filled} decimals filled → {}", decimals.len(), mints.len(), out.display());
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct Stats {
     pub blocks: usize,
@@ -566,6 +646,41 @@ mod tests {
         drop(f);
         assert_eq!(seen_digests(&p).unwrap(), HashSet::from(["aa".to_string(), "bb".to_string(), "cc".to_string()]));
         assert!(std::fs::read_to_string(&p).unwrap().ends_with("{\"tx_dig\n{\"tx_digest\":\"cc\"}\n"));
+    }
+
+    fn old_record() -> Value {
+        json!({"tx_digest": "d", "slot": 5, "extra": {"kept": true},
+            "projection": {"sol": [], "authority": [], "closed": [], "created": [], "tokens": [
+                {"account": "a1", "mint": s(30), "owner": s(1), "pre": "5", "post": "0", "decimals": null},
+                {"account": "a2", "mint": s(30), "owner": s(2), "pre": "0", "post": "5"},
+                {"account": "a3", "mint": s(31), "owner": s(2), "pre": "0", "post": "5", "decimals": 4}]},
+            "token_accounts": {"t1": {"mint": s(32), "owner": s(1), "delegated_amount": "7"}, "t2": {"mint": s(31), "owner": s(1), "decimals": 4}}})
+    }
+
+    #[test]
+    fn backfill_lists_each_missing_mint_once() {
+        let mut want = vec![s(30), s(32)];
+        want.sort();
+        assert_eq!(json_missing_mints(&old_record()), want);
+        assert!(json_missing_mints(&json!({"tx_digest": "x"})).is_empty());
+    }
+
+    #[test]
+    fn backfill_fills_decimals_and_keeps_everything_else() {
+        let mut r = old_record();
+        let n = json_fill_decimals(&mut r, &HashMap::from([(s(30), 6u8), (s(32), 9u8)]));
+        assert_eq!(n, 3);
+        assert_eq!(r["projection"]["tokens"][0]["decimals"], 6);
+        assert_eq!(r["projection"]["tokens"][1]["decimals"], 6);
+        assert_eq!(r["projection"]["tokens"][2]["decimals"], 4);
+        assert_eq!(r["token_accounts"]["t1"]["decimals"], 9);
+        assert_eq!(r["token_accounts"]["t1"]["delegated_amount"], "7");
+        assert_eq!(r["extra"], json!({"kept": true}));
+        assert!(json_missing_mints(&r).is_empty());
+        // Unknown mints stay missing.
+        let mut r = old_record();
+        assert_eq!(json_fill_decimals(&mut r, &HashMap::new()), 0);
+        assert!(r["projection"]["tokens"][0]["decimals"].is_null());
     }
 
     #[test]
