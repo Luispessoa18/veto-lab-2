@@ -610,9 +610,10 @@ def build(records, fmt="risk", seed=42, min_sol=0.001):
                 continue
             signals, reasons = label(out[0], r, out[1])
             if signals == [kind]:
-                candidates.append(((group[kind], per_signal[kind]), rng.random(), kind, out, reasons))
-        # Least-used first within the record's group (synthetic case, or source), so every kind
-        # that applies to a shape of transaction gets used on it, not only the globally rarest.
+                candidates.append(((kind not in UNDECLARED, group[kind], per_signal[kind]), rng.random(), kind, out, reasons))
+        # A hidden permission change is the rarest and most valuable example: it always takes the
+        # first slot when it applies. Otherwise least-used first within the record's group (synthetic
+        # case, or source), so every kind that fits a shape of transaction gets used on it.
         candidates.sort(key=lambda c: (c[0], c[1]))
         for _, _, kind, (m_intent, m_meta), reasons in candidates[:rng.choice((1, 2))]:
             group[kind] += 1

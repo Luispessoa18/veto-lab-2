@@ -525,6 +525,18 @@ class ReviewTests(unittest.TestCase):
                 self.assertIn(intent["asset"], honest_assets.get(name, set()))
         self.assertGreater(found, 0)
 
+    def test_every_bundled_record_yields_its_undeclared_example(self):
+        want = {"bundled_transfer_approve": "undeclared_approval", "bundled_transfer_set_owner": "undeclared_authority_change",
+                "bundled_transfer_close": "undeclared_close"}
+        case = {r["tx_digest"]: r.get("case") for r in ShortcutTests.mix()}
+        got = Counter()
+        for _, row in self.rows:
+            _, _, answer = self.parts(row)
+            c = case[row["tx_digest"]]
+            if c in want and want[c] in answer["signals"]:
+                got[c] += 1
+        self.assertEqual(dict(got), {c: 20 for c in want})
+
     def test_injection_reaches_transfer_and_bundled_cases(self):
         case = {r["tx_digest"]: r.get("case") for r in ShortcutTests.mix()}
         hit = set()
