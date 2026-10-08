@@ -19,8 +19,8 @@ from pathlib import Path
 
 SOL = "SOL"
 SOL_DECIMALS = 9
-# SOL movements below this (rent, tips) are side effects, not the purpose of a token transaction.
-SOL_DUST = 10_000_000
+# SOL movements below this (rent for a couple of accounts, tips) are side effects, not the purpose of a token transaction.
+SOL_DUST = 5_000_000
 # Records with more account changes than this are too big for a short training example.
 MAX_EFFECTS = 60
 AMOUNT_TOLERANCE = Decimal("1.01")
