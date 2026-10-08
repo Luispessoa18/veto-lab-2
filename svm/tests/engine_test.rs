@@ -236,3 +236,30 @@ async fn a_third_party_account_differing_is_not_divergent() {
     assert!(r.outcome.err.is_none(), "{:?}", r.outcome.logs);
     assert_eq!((r.worlds, r.divergent), (2, false));
 }
+
+fn clock_account(slot: u64) -> Account {
+    let c = solana_clock::Clock { slot, unix_timestamp: 1_700_000_000, ..solana_clock::Clock::default() };
+    Account { lamports: 1, data: bincode::serialize(&c).unwrap(), owner: solana_sdk_ids::sysvar::id(), ..Account::default() }
+}
+
+#[tokio::test]
+async fn clock_dissent_far_ahead_of_the_read_slot_refuses() {
+    // engine() reads at slot 500; max_slot_gap defaults to 4.
+    for (primary, secondary) in [(500 + 1_000_000, 500), (500, 500 + 1_000_000)] {
+        let e = engine();
+        e.cache().source().insert(solana_sdk_ids::sysvar::clock::id(), clock_account(primary));
+        e.cache().source().set_dissent(solana_sdk_ids::sysvar::clock::id(), Some(clock_account(secondary)));
+        let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+        let err = sim(&e, &raw).await.unwrap_err();
+        assert!(err.to_string().contains("upstreams disagree on SysvarC1ock"), "{err}");
+    }
+}
+
+#[tokio::test]
+async fn clock_dissent_within_the_gap_is_tolerated() {
+    let e = engine();
+    e.cache().source().insert(solana_sdk_ids::sysvar::clock::id(), clock_account(500));
+    e.cache().source().set_dissent(solana_sdk_ids::sysvar::clock::id(), Some(clock_account(503)));
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    assert_eq!(sim(&e, &raw).await.unwrap().worlds, 2);
+}

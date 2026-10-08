@@ -41,7 +41,7 @@ impl Default for Config {
             preload_programs: Vec::new(),
             upstream_timeout_ms: 10_000,
             upstream_secondary_url: None,
-            quorum_max_slot_gap: 4,
+            quorum_max_slot_gap: crate::engine::MAX_SLOT_GAP,
             quorum_refetch_attempts: 3,
             divergence_tolerance_bps: crate::engine::DIVERGENCE_TOLERANCE_BPS,
         }

@@ -80,6 +80,13 @@ pub async fn simulate_result<S: AccountSource>(engine: &Engine<S>, params: &Valu
         return Err(invalid("Too many accounts provided"));
     }
     let report = engine.simulate(decoded, fresh).await.map_err(|e| RpcError { code: e.code(), message: e.to_string() })?;
+    // A plain RPC client reads only the standard fields and would see world P's result:
+    // divergent worlds fail closed unless the client opted in to read `aval.worlds/divergent`.
+    let worlds_opt_in = config.pointer("/aval/worlds").and_then(Value::as_bool) == Some(true);
+    if report.worlds == 2 && report.divergent && !worlds_opt_in {
+        let keys: Vec<String> = report.disputed.iter().map(|k| k.to_string()).collect();
+        return Err(RpcError { code: -32005, message: format!("simulated worlds diverge (upstreams disagree on {})", keys.join(", ")) });
+    }
     let o = &report.outcome;
     let mut extra: std::collections::HashMap<Address, Option<Account>> = Default::default();
     if o.err.is_none() {

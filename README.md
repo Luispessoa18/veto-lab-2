@@ -182,8 +182,16 @@ cd svm && cargo build --release && cd ..
     difere mais que `divergence_tolerance_bps` (padrão 50, relativo ao maior delta; zero num mundo
     e não-zero no outro sempre diverge). Pools e oráculos mudando diferente, sozinhos, não contam.
   - `getMultipleAccounts` servido do cache continua falhando fechado (`-32005`) numa divergência.
-  - Um provedor mentiroso só consegue deixar o Aval mais estrito, nunca mais frouxo — supondo que
-    ao menos um provedor seja honesto.
+  - Clientes RPC comuns (que só leem os campos padrão) recebem `-32005` "simulated worlds diverge
+    (upstreams disagree on <contas>)" quando os mundos divergem; quem envia
+    `"aval": {"worlds": true}` (o laboratório envia) recebe o mundo P com `aval.worlds/divergent`.
+    `/v1/project` sempre traz as duas projeções.
+  - O `Clock` do cluster nunca passa de `slot lido + quorum_max_slot_gap` na VM, e uma divergência
+    no `Clock` além disso é estrita (as épocas não seriam confiáveis).
+  - Garantia, com ao menos um provedor honesto: um provedor mentiroso só deixa o Aval mais
+    estrito — exceto que uma visão falsa de pools/oráculos pode mover o resultado do usuário em
+    até `divergence_tolerance_bps` sem ser detectada. As contas pedidas em `accounts` que a
+    transação já carrega vêm do mundo P.
 - Medir contra o RPC: `aval-svm shadow --upstream <url> --count 200`.
 - Usa o `Clock` e o `EpochSchedule` do cluster, e verifica os precompiles ed25519/secp256k1.
   Transações maiores que 4096 bytes são recusadas (`-32602`).

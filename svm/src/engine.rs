@@ -41,12 +41,16 @@ pub struct SimReport {
     pub divergent: bool,
     /// With two worlds: the one not reported in `outcome` (world S when both succeed).
     pub alternate: Option<World>,
+    /// Keys the providers disagreed on (sorted; empty with one world).
+    pub disputed: Vec<Address>,
 }
 
 /// Dissent the providers must not have: signers (fee payer included), programs and
 /// ProgramData, and token accounts a signer owns or is delegate of — in either view.
 /// Lookup tables too: they decide which accounts the transaction loads at all.
-fn strict_dissent(decoded: &Decoded, accounts: &HashMap<Address, Option<Account>>, dissent: &Dissent) -> Option<Address> {
+/// A disputed Clock whose slot (in either view) runs past `clock_limit` (read slot + gap) is
+/// strict too: its epoch fields cannot be trusted.
+fn strict_dissent(decoded: &Decoded, accounts: &HashMap<Address, Option<Account>>, dissent: &Dissent, clock_limit: u64) -> Option<Address> {
     let msg = &decoded.tx.message;
     let signers = signers_of(decoded);
     let tables: HashSet<Address> = msg.address_table_lookups().unwrap_or(&[]).iter().map(|l| l.account_key).collect();
@@ -59,12 +63,19 @@ fn strict_dissent(decoded: &Decoded, accounts: &HashMap<Address, Option<Account>
     let mut strict: Vec<Address> = dissent.iter()
         .filter(|(k, theirs)| {
             signers.contains(*k) || tables.contains(*k) || strict_view(theirs)
+                || (**k == solana_sdk_ids::sysvar::clock::ID
+                    && (clock_past(theirs, clock_limit) || accounts.get(*k).is_some_and(|a| clock_past(a, clock_limit))))
                 || accounts.get(*k).is_some_and(strict_view)
         })
         .map(|(k, _)| *k)
         .collect();
     strict.sort_by_key(|k| k.to_string());
     strict.first().copied()
+}
+
+/// A Clock sysvar view whose slot is past `limit` (garbled or absent: no).
+fn clock_past(a: &Option<Account>, limit: u64) -> bool {
+    a.as_ref().and_then(|a| bincode::deserialize::<solana_clock::Clock>(&a.data).ok()).is_some_and(|c| c.slot > limit)
 }
 
 fn signers_of(decoded: &Decoded) -> HashSet<Address> {
@@ -125,19 +136,28 @@ impl From<SimError> for EngineError {
 
 /// Default `divergence_tolerance_bps`.
 pub const DIVERGENCE_TOLERANCE_BPS: u64 = 50;
+/// Default `quorum_max_slot_gap`.
+pub const MAX_SLOT_GAP: u64 = 4;
 
 pub struct Engine<S> {
     cache: Cache<S>,
     pool: Pool,
     tolerance_bps: u64,
+    max_slot_gap: u64,
 }
 
 impl<S: AccountSource> Engine<S> {
-    pub fn new(cache: Cache<S>, pool: Pool) -> Self { Engine { cache, pool, tolerance_bps: DIVERGENCE_TOLERANCE_BPS } }
+    pub fn new(cache: Cache<S>, pool: Pool) -> Self { Engine { cache, pool, tolerance_bps: DIVERGENCE_TOLERANCE_BPS, max_slot_gap: MAX_SLOT_GAP } }
 
     /// How far (in bps of the larger delta) the user's deltas may differ between two worlds.
     pub fn with_divergence_tolerance_bps(mut self, bps: u64) -> Self {
         self.tolerance_bps = bps;
+        self
+    }
+
+    /// How far the cluster Clock may run ahead of the read slot (the quorum's slot gap).
+    pub fn with_max_slot_gap(mut self, gap: u64) -> Self {
+        self.max_slot_gap = gap;
         self
     }
 
@@ -173,15 +193,18 @@ impl<S: AccountSource> Engine<S> {
     pub async fn simulate(&self, decoded: Decoded, fresh: bool) -> Result<SimReport, EngineError> {
         let started = Instant::now();
         let mut got = self.gather(&decoded, fresh).await?;
-        if let Some(k) = strict_dissent(&decoded, &got.accounts, &got.dissent) {
+        if let Some(k) = strict_dissent(&decoded, &got.accounts, &got.dissent, got.slot.saturating_add(self.max_slot_gap)) {
             return Err(EngineError::Upstream(format!("upstreams disagree on {k}")));
         }
         let signers = signers_of(&decoded);
+        let mut disputed: Vec<Address> = got.dissent.keys().copied().collect();
+        disputed.sort_by_key(|k| k.to_string());
         let slot = got.slot;
         let input = |tx, accounts: &HashMap<Address, Option<Account>>| SimInput {
             tx,
             accounts: accounts.iter().map(|(k, a)| (*k, a.clone())).collect(),
             slot,
+            max_clock_lead: self.max_slot_gap,
         };
         let (outcome, pre, worlds, divergent, alternate) = if got.dissent.is_empty() {
             let outcome = self.pool.run(input(decoded.tx, &got.accounts)).await?;
@@ -214,6 +237,7 @@ impl<S: AccountSource> Engine<S> {
             worlds,
             divergent,
             alternate,
+            disputed,
         })
     }
 }

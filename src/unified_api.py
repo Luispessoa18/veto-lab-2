@@ -208,7 +208,9 @@ class VetoPipeline:
         if not isinstance(serialized, str) or not serialized:
             return result("REVIEW", "solana_simulation", "SOLANA_TRANSACTION_MISSING")
         options = {"encoding": spec.get("encoding", "base64"), "commitment": spec.get("commitment", "confirmed"),
-                   "replaceRecentBlockhash": True, "sigVerify": False, "innerInstructions": True}
+                   "replaceRecentBlockhash": True, "sigVerify": False, "innerInstructions": True,
+                   # aval-svm: pede os dois mundos (sem isso, mundos divergentes viram erro -32005)
+                   "aval": {"worlds": True}}
         body, engine, latency, last_error = None, None, None, None
         for engine, rpc_url in targets:
             started = time.perf_counter()

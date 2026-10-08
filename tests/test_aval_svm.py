@@ -107,10 +107,12 @@ class AvalSvmTests(unittest.TestCase):
 
     def test_divergent_worlds_turn_allow_into_review(self):
         divergent = {"result": {**OK["result"], "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": True}}}
-        with patch("src.unified_api.requests.post", return_value=reply(divergent)):
+        with patch("src.unified_api.requests.post", return_value=reply(divergent)) as post:
             out = self.pipe().simulate_solana(PAYLOAD, "r11")
         self.assertEqual((out["decision"], out["reason"], out["engine"]), ("REVIEW", "SOLANA_SIMULATION_DIVERGENT", "aval-svm"))
         self.assertEqual(out["aval"]["worlds"], 2)
+        sent = post.call_args.kwargs["json"]["params"][1]
+        self.assertEqual(sent["aval"], {"worlds": True}, "opts in to the two-worlds reply")
         same = {"result": {**OK["result"], "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": False}}}
         with patch("src.unified_api.requests.post", return_value=reply(same)):
             self.assertEqual(self.pipe().simulate_solana(PAYLOAD, "r12")["decision"], "ALLOW")

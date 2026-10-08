@@ -151,9 +151,34 @@ async fn divergent_worlds_carry_the_alternate_projection() {
     let alt = &out["projectionAlternate"];
     assert_eq!(alt["created"], json!([]), "{out}");
     assert!(alt["sol"].as_array().unwrap().iter().any(|d| d["account"] == key(2).to_string() && d["pre"] == 5_000_000 && d["post"] == 6_000_000), "{out}");
-    let rpc = post(divergent_app(), "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
+}
+
+#[tokio::test]
+async fn divergent_worlds_fail_closed_for_plain_rpc_clients() {
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    let plain = post(divergent_app(), "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
         "params": [B64.encode(&raw), {"encoding": "base64"}]})).await;
-    assert_eq!((&rpc["result"]["aval"]["worlds"], &rpc["result"]["aval"]["divergent"]), (&json!(2), &json!(true)), "{rpc}");
+    assert_eq!(plain["error"]["code"], -32005, "{plain}");
+    assert_eq!(plain["error"]["message"], format!("simulated worlds diverge (upstreams disagree on {})", key(2)), "{plain}");
+    let opted = post(divergent_app(), "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
+        "params": [B64.encode(&raw), {"encoding": "base64", "aval": {"worlds": true}}]})).await;
+    assert!(opted["result"]["value"]["err"].is_null(), "{opted}");
+    assert_eq!((&opted["result"]["aval"]["worlds"], &opted["result"]["aval"]["divergent"]), (&json!(2), &json!(true)), "{opted}");
+}
+
+#[tokio::test]
+async fn non_divergent_two_worlds_answer_plain_clients() {
+    // key(5) is not loaded by the transfer... so load it read-only: same result in both worlds.
+    let src = MemSource::new(900);
+    src.insert(key(1), Account { lamports: 10_000_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    src.insert(key(5), Account { lamports: 777, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    src.set_dissent(key(5), Some(Account { lamports: 778, owner: solana_sdk_ids::system_program::id(), ..Account::default() }));
+    let engine = Engine::new(Cache::new(src, Duration::from_secs(60)), Pool::new(1, 100));
+    let a = router(Arc::new(App { engine, upstream: Upstream::new("http://127.0.0.1:9", "confirmed", 2000) }));
+    let raw = common::transfer_with_readonly(key(1), key(2), 1_000_000, key(5));
+    let out = post(a, "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction", "params": [B64.encode(&raw), {"encoding": "base64"}]})).await;
+    assert!(out["result"]["value"]["err"].is_null(), "{out}");
+    assert_eq!((&out["result"]["aval"]["worlds"], &out["result"]["aval"]["divergent"]), (&json!(2), &json!(false)), "{out}");
 }
 
 #[tokio::test]

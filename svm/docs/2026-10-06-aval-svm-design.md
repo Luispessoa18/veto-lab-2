@@ -135,9 +135,19 @@ differs by more than `divergence_tolerance_bps` (default 50, relative to the lar
 delta; zero in one world and non-zero in the other always diverges). Third-party accounts
 (pools, oracles) moving differently is not divergence by itself.
 
-A lying provider can only make Aval stricter, never looser — assuming at least one honest
-provider: the stricter of the two worlds is reported, and dissent on what the signer controls
-(or on code) refuses.
+Plain RPC clients read only the standard fields, so a divergent pair of worlds answers
+`simulateTransaction` with `-32005` "simulated worlds diverge (upstreams disagree on <keys>)";
+a client that sends `"aval": {"worlds": true}` (the lab does) gets world P plus
+`aval.worlds/divergent` instead. `/v1/project` always returns both projections. The cluster
+Clock is clamped in the VM to read slot + `quorum_max_slot_gap` (so a far-future Clock cannot
+ratchet a worker's slot), and Clock dissent past that is strict (its epoch fields would be
+untrustworthy).
+
+Guarantee, assuming at least one honest provider: a lying provider can only make Aval
+stricter, never looser — plain clients fail closed on divergence and opt-in clients see both
+worlds — with one bound: a lying pool/oracle view can shift the user's result by up to
+`divergence_tolerance_bps` undetected. Requested `accounts` the transaction already loads are
+returned from world P.
 
 **Preloaded at boot.** System, SPL Token, Token-2022, Associated Token, Memo,
 Compute Budget, Stake, Address Lookup Table, and a configurable list

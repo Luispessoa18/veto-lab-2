@@ -216,7 +216,8 @@ async fn main() -> anyhow::Result<()> {
                 refetch_attempts: c.quorum_refetch_attempts,
             };
             let engine = Engine::new(Cache::new(quorum, Duration::from_millis(c.cache_ttl_ms)).with_program_ttl(Duration::from_millis(c.program_ttl_ms)), Pool::new(c.pool_size, c.recycle_after))
-                .with_divergence_tolerance_bps(c.divergence_tolerance_bps);
+                .with_divergence_tolerance_bps(c.divergence_tolerance_bps)
+                .with_max_slot_gap(c.quorum_max_slot_gap);
             let preload: Vec<Address> = DEFAULT_PRELOAD.iter().map(|s| s.to_string()).chain(c.preload_programs.clone())
                 .filter_map(|s| Address::from_str(&s).ok()).collect();
             if let Err(e) = engine.cache().get_many(&preload, false).await {
