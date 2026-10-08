@@ -227,6 +227,12 @@ pub struct Args {
 
 const RETRIES: u32 = 4;
 
+/// getBlock params. Mainnet blocks carry v1 transactions: asking for less fails the whole block (-32015).
+pub fn block_params(slot: u64) -> Value {
+    json!([slot, {"encoding": "base64", "transactionDetails": "full", "maxSupportedTransactionVersion": 1,
+        "rewards": false, "commitment": "finalized"}])
+}
+
 async fn call_with_retry(up: &Upstream, method: &str, params: Value) -> Result<Value, SourceError> {
     let mut attempt = 0;
     loop {
@@ -282,8 +288,9 @@ pub async fn run(a: &Args) -> anyhow::Result<()> {
         tried += 1;
         let s = slot;
         slot = slot.saturating_sub(1);
-        let block = call_with_retry(&up, "getBlock", json!([s, {"encoding": "base64", "transactionDetails": "full",
-            "maxSupportedTransactionVersion": 0, "rewards": false, "commitment": "finalized"}])).await;
+        // Skipped slots come back at once; pace block reads too so they do not hit the per-method limit.
+        tokio::time::sleep(Duration::from_millis(a.delay_ms)).await;
+        let block = call_with_retry(&up, "getBlock", block_params(s)).await;
         let block = match block {
             Ok(b) if b.is_null() => continue,
             Ok(b) => b,
@@ -484,6 +491,14 @@ mod tests {
         assert_eq!(backoff(0), Duration::from_secs(1));
         assert_eq!(backoff(3), Duration::from_secs(8));
         assert_eq!(backoff(9), Duration::from_secs(16));
+    }
+
+    #[test]
+    fn block_reads_accept_v1_transactions() {
+        let p = block_params(42);
+        assert_eq!(p[0], 42);
+        assert_eq!(p[1]["maxSupportedTransactionVersion"], 1);
+        assert_eq!((p[1]["encoding"].as_str(), p[1]["transactionDetails"].as_str(), p[1]["commitment"].as_str()), (Some("base64"), Some("full"), Some("finalized")));
     }
 
     #[test]
