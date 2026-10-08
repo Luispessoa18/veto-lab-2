@@ -75,17 +75,20 @@ class IntentTests(unittest.TestCase):
             self.assertIn(e, i["allowed_effects"])
         self.assertEqual(sd.label(i, SWAP_PLUS, {}), ([], []))
 
-    def test_nothing_derivable_is_skipped(self):
+    def test_no_outflow_is_an_honest_other_intent(self):
         fee_only = rec("fee", sol=[sol(A, 10_000, 10_000 - FEE)])
-        self.assertIsNone(sd.derive_intent(fee_only))
         inflow_only = rec("in", tokens=[tok("Z" * 44, MINT, A, 0, 5)])
-        self.assertIsNone(sd.derive_intent(inflow_only))
+        for r, effects in ((fee_only, []), (inflow_only, ["token_in:" + MINT])):
+            i = sd.derive_intent(r)
+            self.assertEqual((i["action"], i["asset"], i["amount"], i["recipient"]), ("other", None, None, None))
+            self.assertEqual(i["allowed_effects"], effects)
+            self.assertEqual(sd.label(i, r, {}), ([], []))
 
 
 class MutationTests(unittest.TestCase):
     def check(self, kind, record):
         honest = sd.derive_intent(record)
-        out = sd.mutate(kind, honest, record, random.Random(1))
+        out = sd.mutate(kind, honest, record, random.Random(1), twins=TWINS)
         self.assertIsNotNone(out, kind)
         intent, metadata = out
         signals, reasons = sd.label(intent, record, metadata)
@@ -199,7 +202,8 @@ class OutputTests(unittest.TestCase):
         self.assertLessEqual(top, 0.35 * mutated + 1, stats["per_signal"])
 
     def test_skips_are_counted(self):
-        recs = self.records(10) + [rec("fee", sol=[sol(A, 10_000, 10_000 - FEE)])]
+        # SOL leaves the signer but nobody receives it: no sensible intent.
+        recs = self.records(10) + [rec("burn", sol=[sol(A, 10_000_000, 5_000_000 - FEE)])]
         _, stats = sd.build(recs, "risk", seed=1)
         self.assertEqual(stats["records"], 11)
         self.assertEqual(sum(stats["skipped"].values()), 1)
@@ -230,6 +234,10 @@ CLOSE_BACK = synth("cb", sol=[sol(A, 10_000_000, 10_000_000 + RENT - FEE), sol("
                    closed=["X" * 44], token_accounts={"X" * 44: {"mint": USDC, "owner": A}})
 
 
+TWIN = dict(TOKEN_TRANSFER, tx_digest="twin", source="synthetic", case="benign_transfer")
+TWINS = [("twin", sd.derive_intent(TWIN))]
+
+
 class PermissionTests(unittest.TestCase):
     def test_approve_intent_has_spender_and_amount(self):
         i = sd.derive_intent(APPROVE_BOUNDED)
@@ -253,7 +261,7 @@ class PermissionTests(unittest.TestCase):
             self.assertEqual(sd.label(i, r, {}), ([], []))
 
     def check(self, kind, record):
-        out = sd.mutate(kind, sd.derive_intent(record), record, random.Random(3))
+        out = sd.mutate(kind, sd.derive_intent(record), record, random.Random(3), twins=TWINS)
         self.assertIsNotNone(out, (kind, record["tx_digest"]))
         signals, reasons = sd.label(out[0], record, out[1])
         self.assertEqual(signals, [kind], record["tx_digest"])
@@ -306,6 +314,76 @@ class SourceAndFilterTests(unittest.TestCase):
             stats = json.loads((Path(d) / "ds" / "stats.json").read_text())
             self.assertEqual(stats["records"], 3)
             self.assertEqual(set(stats["per_source"]), {"mainnet", "synthetic"})
+
+
+class ShortcutTests(unittest.TestCase):
+    def test_hidden_main_effect_becomes_a_benign_twin_request(self):
+        for kind, r in (("undeclared_approval", APPROVE_UNLIMITED), ("undeclared_approval", APPROVE_BOUNDED),
+                        ("undeclared_authority_change", SET_OWNER), ("undeclared_close", CLOSE_STRANGER)):
+            intent, meta = sd.mutate(kind, sd.derive_intent(r), r, random.Random(5), twins=TWINS)
+            twin = TWINS[0][1]
+            self.assertEqual({k: intent[k] for k in ("action", "asset", "amount", "decimals", "recipient")},
+                             {k: twin[k] for k in ("action", "asset", "amount", "decimals", "recipient")})
+            self.assertNotEqual(intent["action"], "other")
+            self.assertEqual(sd.label(intent, r, meta)[0], [kind], r["tx_digest"])
+
+    def test_twin_is_never_the_record_itself_and_is_required(self):
+        self.assertIsNone(sd.mutate("undeclared_approval", sd.derive_intent(APPROVE_UNLIMITED), APPROVE_UNLIMITED,
+                                    random.Random(1), twins=[]))
+        own = [(APPROVE_UNLIMITED["tx_digest"], sd.derive_intent(TOKEN_TRANSFER))]
+        self.assertIsNone(sd.mutate("undeclared_approval", sd.derive_intent(APPROVE_UNLIMITED), APPROVE_UNLIMITED,
+                                    random.Random(1), twins=own))
+
+    def test_a_declared_transfer_that_does_not_happen_is_not_asset_mismatch_alone(self):
+        intent = sd.derive_intent(TOKEN_TRANSFER)
+        self.assertEqual(sd.label(intent, SET_OWNER, {})[0], ["undeclared_authority_change"])
+
+    def test_other_never_carries_an_amount(self):
+        splits, _ = sd.build(ShortcutTests.mix(), "risk", seed=11)
+        for row in [r for v in splits.values() for r in v]:
+            intent = json.loads(row["example"]["messages"][1]["content"])["intent"]
+            if intent["action"] == "other":
+                self.assertEqual((intent["amount"], intent["asset"]), (None, None))
+
+    @staticmethod
+    def mix():
+        base = [SOL_TRANSFER, TOKEN_TRANSFER, SWAP, APPROVE_BOUNDED, APPROVE_UNLIMITED, SET_OWNER, CLOSE_STRANGER,
+                CLOSE_BACK, TWIN, rec("fee", sol=[sol(A, 10_000, 10_000 - FEE)]),
+                rec("in", tokens=[tok("Z" * 44, MINT, A, 0, 5)])]
+        return [dict(base[i % len(base)], tx_digest=f"m{i:03d}") for i in range(220)]
+
+    def test_no_action_has_a_degenerate_risk_ratio(self):
+        _, stats = sd.build(self.mix(), "risk", seed=11)
+        ratios = stats["risk_by_action"]
+        self.assertIn("other", ratios)
+        for action, r in ratios.items():
+            if r["n"] >= 20:
+                self.assertTrue(0.15 <= r["high_ratio"] <= 0.85, (action, r))
+        self.assertEqual(stats["warnings"], [])
+
+    def test_degenerate_ratios_are_warned(self):
+        w = sd.ratio_warnings({"approve": {"n": 40, "high": 39, "high_ratio": 0.975}, "x": {"n": 5, "high": 5, "high_ratio": 1.0}})
+        self.assertEqual(len(w), 1)
+        self.assertIn("approve", w[0])
+
+    def test_test_split_is_written_per_source(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            eff = Path(d) / "e.jsonl"
+            eff.write_text("\n".join(json.dumps(r) for r in self.mix()) + "\n")
+            sd.main(["--effects", str(eff), "--out", str(Path(d) / "ds"), "--seed", "11"])
+            out = Path(d) / "ds"
+            test = [json.loads(l) for l in (out / "test.jsonl").read_text().splitlines()]
+            tagged = [json.loads(l) for l in (out / "test_by_source.jsonl").read_text().splitlines()]
+            mainnet = (out / "test_mainnet.jsonl").read_text().splitlines()
+            synthetic = (out / "test_synthetic.jsonl").read_text().splitlines()
+            self.assertEqual(len(tagged), len(test))
+            self.assertEqual(len(mainnet) + len(synthetic), len(test))
+            self.assertEqual({t["source"] for t in tagged}, {"mainnet", "synthetic"})
+            self.assertEqual([t["messages"] for t in tagged], [t["messages"] for t in test])
+            stats = json.loads((out / "stats.json").read_text())
+            self.assertEqual(stats["splits"]["test"]["by_source"]["mainnet"], len(mainnet))
 
 
 if __name__ == "__main__":

@@ -211,6 +211,11 @@ python -m src.svm_dataset --effects results/svm_effects.jsonl results/svm_effect
 
 - `--min-sol` (padrão 0.001) descarta transfer_sol menores que isso (spam/gorjetas); a contagem
   vai para `stats.json`, que também separa tudo por origem (`mainnet` / `synthetic`).
+- Avaliação por origem: `test_mainnet.jsonl`, `test_synthetic.jsonl` e `test_by_source.jsonl`
+  (cada linha com `source`). Os casos sintéticos são mais fáceis; reporte os dois números.
+- Sem atalhos: quando uma mutação `undeclared_*` esconde o efeito principal, a intenção vira um
+  pedido inocente plausível (a intenção honesta de uma transferência benigna de outro registro);
+  `stats.json` traz `risk_by_action` e avisa se alguma ação ficar >85% ou <15% de risco alto.
 
 - Saída em chat JSONL (`messages` system/user/assistant), aceita por MLX-LM e Unsloth:
   `results/svm_dataset/{train,valid,test}.jsonl` + `stats.json` (contagens por split, por sinal,

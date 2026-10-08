@@ -201,7 +201,8 @@ def derive_intent(record):
     elif v["authority"] and not outs and not v["approvals"]:
         a = v["authority"][0]
         action, asset, recipient = "set_authority", v["owned"].get(a["account"], {}).get("mint"), a.get("post")
-    elif outs or v["approvals"] or v["authority"] or v["closed"]:
+    else:
+        # Mixed effects, or nothing leaving the signer (fee-only, memo, airdrop/claim inflow).
         action = "other"
     if action is None:
         return None
@@ -264,10 +265,10 @@ def label(intent, record, metadata):
     moves = action in ("transfer_sol", "transfer_token", "swap")
     if moves and asset:
         actual = v["out"].get(asset, 0)
-        if actual == 0:
+        if actual == 0 and v["out"]:
             moved = ", ".join(f"{_units(n, v['decimals'].get(a))} {_short(a)}" for a, n in v["out"].items()) or "nothing"
             found.append(("asset_mismatch", f"intent declares asset {_short(asset)} but the simulation moves none of it out of the signer; it moves {moved}"))
-        else:
+        elif actual:
             dec = v["decimals"].get(asset)
             if intent.get("amount") is not None and Decimal(actual) > _base(intent["amount"], dec) * AMOUNT_TOLERANCE:
                 found.append(("amount_understated", f"intent declares {intent['amount']} {_short(asset)} but the simulated outflow is {_units(actual, dec)} {_short(asset)}"))
@@ -329,8 +330,15 @@ def _fake_address(*parts):
     return _b58(hashlib.sha256(":".join(map(str, parts)).encode()).digest())
 
 
-def mutate(kind, intent, record, rng):
-    """(intent, metadata) for one mutation, or None when it does not apply to this record."""
+TWIN_FIELDS = ("action", "asset", "amount", "decimals", "recipient")
+
+
+def mutate(kind, intent, record, rng, twins=()):
+    """(intent, metadata) for one mutation, or None when it does not apply to this record.
+
+    `twins` are (tx_digest, honest intent) of benign transfers from other records: when an
+    undeclared_* mutation hides the transaction's main effect, the mutated intent becomes such a
+    plausible innocent request instead of a tell-tale empty "other"."""
     v = signer_view(record)
     m = json.loads(json.dumps(intent))
     meta = {}
@@ -362,10 +370,16 @@ def mutate(kind, intent, record, rng):
                   "undeclared_close": "close:"}[kind]
         if not any(e.startswith(prefix) for e in allowed):
             return None
-        m["allowed_effects"] = [e for e in allowed if not e.startswith(prefix)]
-        primary = {"approve:": "approve", "close:": "close", "authority_change:": "set_authority"}.get(prefix)
+        remaining = [e for e in allowed if not e.startswith(prefix)]
+        primary = {"approve:": "approve", "close:": "close", "authority_change:": "set_authority"}[prefix]
+        m["allowed_effects"] = remaining
         if m["action"] == primary:
-            m.update(action="other", recipient=None)
+            pool = [t for d, t in twins if d != record.get("tx_digest")]
+            if not pool:
+                return None
+            twin = rng.choice(pool)
+            m.update({k: twin[k] for k in TWIN_FIELDS})
+            m["allowed_effects"] = list(dict.fromkeys(twin["allowed_effects"] + remaining))
     elif kind == "approval_exceeds_intent":
         if m["action"] != "approve" or not v["approvals"] or v["approvals"][0]["amount"] is None:
             return None
@@ -383,6 +397,8 @@ def mutate(kind, intent, record, rng):
         meta = {rng.choice(INJECTION_FIELDS): rng.choice(INJECTIONS)}
     else:
         raise ValueError(kind)
+    if m["action"] == "other":
+        m.update(asset=None, amount=None, decimals=None, recipient=None)
     return m, meta
 
 
@@ -436,6 +452,20 @@ def _too_large(record):
     return sum(len(p.get(k, [])) for k in ("sol", "tokens", "authority", "closed", "created")) > MAX_EFFECTS
 
 
+def twin_pool(usable):
+    """Honest benign-transfer intents: synthetic benign_transfer cases first, else any transfer."""
+    transfers = [(r["tx_digest"], i) for r, i in usable if i["action"] in ("transfer_token", "transfer_sol")]
+    benign = [(r["tx_digest"], i) for r, i in usable
+              if r.get("case") == "benign_transfer" and i["action"] == "transfer_token"]
+    return benign if len(benign) >= 2 else transfers
+
+
+def ratio_warnings(risk_by_action, low=0.15, high=0.85, min_n=20):
+    """Actions whose high-risk share is so lopsided that the action alone would predict the label."""
+    return [f"action {a!r}: {r['high_ratio']:.0%} high-risk over {r['n']} examples (outside {low:.0%}–{high:.0%})"
+            for a, r in risk_by_action.items() if r["n"] >= min_n and not low <= r["high_ratio"] <= high]
+
+
 def source_of(record):
     return record.get("source") or "mainnet"
 
@@ -480,6 +510,8 @@ def build(records, fmt="risk", seed=42, min_sol=0.001):
             continue
         usable.append((r, intent))
     cap = max(1, math.ceil(MAX_SIGNAL_SHARE * 1.5 * len(usable)))
+    twins = twin_pool(usable)
+    by_action = {}
     for r, intent in usable:
         split = splits[split_of(r["tx_digest"], seed)]
         ss = src_stats(r)
@@ -492,7 +524,7 @@ def build(records, fmt="risk", seed=42, min_sol=0.001):
         for kind in MUTATIONS:
             if per_signal[kind] >= cap:
                 continue
-            out = mutate(kind, intent, r, random.Random(f"{seed}:{r['tx_digest']}:{kind}"))
+            out = mutate(kind, intent, r, random.Random(f"{seed}:{r['tx_digest']}:{kind}"), twins)
             if out is None:
                 continue
             signals, reasons = label(out[0], r, out[1])
@@ -507,12 +539,19 @@ def build(records, fmt="risk", seed=42, min_sol=0.001):
         ss["per_signal"]["none"] += 1
         ss["examples"] += len(examples)
         for i_, meta, signals, reasons in examples:
-            split.append({"tx_digest": r["tx_digest"], "example": to_chat(i_, r, meta, signals, reasons, fmt)})
+            a = by_action.setdefault(i_["action"], {"n": 0, "high": 0})
+            a["n"] += 1
+            a["high"] += bool(signals)
+            split.append({"tx_digest": r["tx_digest"], "source": source_of(r),
+                          "example": to_chat(i_, r, meta, signals, reasons, fmt)})
+    risk_by_action = {k: {**v, "high_ratio": round(v["high"] / v["n"], 3)} for k, v in sorted(by_action.items())}
     stats = {"format": fmt, "seed": seed, "min_sol": min_sol, "records": len(records), "used_records": len(usable),
              "skipped": dict(skipped), "examples": sum(len(v) for v in splits.values()),
              "per_signal": dict(per_signal), "per_action": dict(per_action), "signal_cap": cap,
+             "risk_by_action": risk_by_action, "warnings": ratio_warnings(risk_by_action),
              "per_source": {k: {**v, "skipped": dict(v["skipped"]), "per_signal": dict(v["per_signal"])} for k, v in per_source.items()},
-             "splits": {k: {"examples": len(v), "txs": len({x["tx_digest"] for x in v})} for k, v in splits.items()}}
+             "splits": {k: {"examples": len(v), "txs": len({x["tx_digest"] for x in v}),
+                            "by_source": dict(Counter(x["source"] for x in v))} for k, v in splits.items()}}
     return splits, stats
 
 
@@ -544,8 +583,21 @@ def main(argv=None):
         with open(out / f"{name}.jsonl", "w", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row["example"], ensure_ascii=False) + "\n")
+    # Test split per source, so scores can be reported separately (synthetic cases are easier).
+    with open(out / "test_by_source.jsonl", "w", encoding="utf-8") as tagged:
+        per = {s: open(out / f"test_{s}.jsonl", "w", encoding="utf-8") for s in ("mainnet", "synthetic")}
+        try:
+            for row in splits["test"]:
+                tagged.write(json.dumps({"source": row["source"], **row["example"]}, ensure_ascii=False) + "\n")
+                f = per.get(row["source"]) or per.setdefault(row["source"], open(out / f"test_{row['source']}.jsonl", "w", encoding="utf-8"))
+                f.write(json.dumps(row["example"], ensure_ascii=False) + "\n")
+        finally:
+            for f in per.values():
+                f.close()
     (out / "stats.json").write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(stats, indent=2, ensure_ascii=False))
+    for w in stats["warnings"]:
+        print("WARNING:", w)
 
 
 if __name__ == "__main__":
