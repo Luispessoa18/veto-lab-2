@@ -205,5 +205,108 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(sum(stats["skipped"].values()), 1)
 
 
+RENT = 2_039_280
+UNLIMITED = str(2 ** 64 - 1)
+
+
+def synth(digest, **kw):
+    r = rec(digest, **kw)
+    r["source"] = "synthetic"
+    return r
+
+
+APPROVE_BOUNDED = synth("ab", sol=[sol(A, 10_000_000, 10_000_000 - FEE)],
+                        authority=[{"account": "X" * 44, "field": "delegate", "pre": None, "post": C}],
+                        token_accounts={"X" * 44: {"mint": USDC, "owner": A, "delegated_amount": "5000000"}})
+APPROVE_UNLIMITED = synth("au", sol=[sol(A, 10_000_000, 10_000_000 - FEE)],
+                          authority=[{"account": "X" * 44, "field": "delegate", "pre": None, "post": C}],
+                          token_accounts={"X" * 44: {"mint": USDC, "owner": A, "delegated_amount": UNLIMITED}})
+SET_OWNER = synth("so", sol=[sol(A, 10_000_000, 10_000_000 - FEE)],
+                  authority=[{"account": "X" * 44, "field": "owner", "pre": A, "post": C}],
+                  token_accounts={"X" * 44: {"mint": USDC, "owner": A}})
+CLOSE_STRANGER = synth("cs", sol=[sol(A, 10_000_000, 10_000_000 - FEE), sol("X" * 44, RENT, 0), sol(C, 0, RENT)],
+                       closed=["X" * 44], created=[C], token_accounts={"X" * 44: {"mint": USDC, "owner": A}})
+CLOSE_BACK = synth("cb", sol=[sol(A, 10_000_000, 10_000_000 + RENT - FEE), sol("X" * 44, RENT, 0)],
+                   closed=["X" * 44], token_accounts={"X" * 44: {"mint": USDC, "owner": A}})
+
+
+class PermissionTests(unittest.TestCase):
+    def test_approve_intent_has_spender_and_amount(self):
+        i = sd.derive_intent(APPROVE_BOUNDED)
+        self.assertEqual((i["action"], i["asset"], i["recipient"], i["amount"]), ("approve", USDC, C, "5000000"))
+        self.assertEqual(sd.derive_intent(APPROVE_UNLIMITED)["amount"], "unlimited")
+        for r in (APPROVE_BOUNDED, APPROVE_UNLIMITED):
+            self.assertEqual(sd.label(sd.derive_intent(r), r, {}), ([], []))
+
+    def test_set_authority_intent_names_the_new_authority(self):
+        i = sd.derive_intent(SET_OWNER)
+        self.assertEqual((i["action"], i["asset"], i["recipient"]), ("set_authority", USDC, C))
+        self.assertEqual(i["allowed_effects"], ["authority_change:" + "X" * 44 + ":owner"])
+        self.assertEqual(sd.label(i, SET_OWNER, {}), ([], []))
+
+    def test_close_intent_names_the_rent_destination(self):
+        self.assertEqual(sd.derive_intent(CLOSE_STRANGER)["recipient"], C)
+        self.assertEqual(sd.derive_intent(CLOSE_BACK)["recipient"], A)
+        for r in (CLOSE_STRANGER, CLOSE_BACK):
+            i = sd.derive_intent(r)
+            self.assertEqual(i["action"], "close")
+            self.assertEqual(sd.label(i, r, {}), ([], []))
+
+    def check(self, kind, record):
+        out = sd.mutate(kind, sd.derive_intent(record), record, random.Random(3))
+        self.assertIsNotNone(out, (kind, record["tx_digest"]))
+        signals, reasons = sd.label(out[0], record, out[1])
+        self.assertEqual(signals, [kind], record["tx_digest"])
+        return out[0], reasons[0]
+
+    def test_approval_exceeds_intent(self):
+        intent, reason = self.check("approval_exceeds_intent", APPROVE_UNLIMITED)
+        self.assertNotEqual(intent["amount"], "unlimited")
+        self.assertIn("unlimited", reason)
+        intent, reason = self.check("approval_exceeds_intent", APPROVE_BOUNDED)
+        self.assertLess(int(intent["amount"]), 5_000_000)
+        self.assertIn("5000000", reason)
+        self.assertIsNone(sd.mutate("approval_exceeds_intent", sd.derive_intent(SET_OWNER), SET_OWNER, random.Random(1)))
+        # A delegate without a known amount cannot be judged exceeded.
+        self.assertIsNone(sd.mutate("approval_exceeds_intent", sd.derive_intent(APPROVE), APPROVE, random.Random(1)))
+
+    def test_undeclared_permission_effects(self):
+        self.check("undeclared_approval", APPROVE_UNLIMITED)
+        self.check("undeclared_authority_change", SET_OWNER)
+        self.check("undeclared_close", CLOSE_STRANGER)
+
+    def test_wrong_destination_or_authority_is_recipient_mismatch(self):
+        self.check("recipient_mismatch", CLOSE_STRANGER)
+        self.check("recipient_mismatch", SET_OWNER)
+
+
+class SourceAndFilterTests(unittest.TestCase):
+    def test_min_sol_drops_spam_transfers(self):
+        spam = rec("spam", sol=[sol(A, 2_000_000_000, 2_000_000_000 - 500_000 - FEE), sol(B, 10, 500_010)])
+        _, stats = sd.build([spam, SOL_TRANSFER], "risk", seed=1)
+        self.assertEqual(stats["skipped"], {"below_min_sol": 1})
+        _, stats = sd.build([spam, SOL_TRANSFER], "risk", seed=1, min_sol=0.0001)
+        self.assertEqual(stats["skipped"], {})
+
+    def test_stats_split_by_source_and_missing_source_is_mainnet(self):
+        recs = [SOL_TRANSFER, TOKEN_TRANSFER, APPROVE_BOUNDED, SET_OWNER, CLOSE_STRANGER]
+        _, stats = sd.build(recs, "risk", seed=1)
+        self.assertEqual(stats["per_source"]["mainnet"]["records"], 2)
+        self.assertEqual(stats["per_source"]["synthetic"]["records"], 3)
+        self.assertEqual(stats["per_source"]["synthetic"]["per_signal"]["none"], 3)
+
+    def test_cli_reads_several_effects_files(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d) / "real.jsonl", Path(d) / "synth.jsonl"
+            a.write_text(json.dumps(SOL_TRANSFER) + "\n")
+            b.write_text("\n".join(json.dumps(r) for r in (APPROVE_UNLIMITED, SET_OWNER)) + "\n")
+            sd.main(["--effects", str(a), str(b), "--out", str(Path(d) / "ds"), "--seed", "1"])
+            stats = json.loads((Path(d) / "ds" / "stats.json").read_text())
+            self.assertEqual(stats["records"], 3)
+            self.assertEqual(set(stats["per_source"]), {"mainnet", "synthetic"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,8 @@ deriva uma intenção HONESTA de cada uma e gera exemplos pareados em formato ch
 o exemplo honesto (risco baixo) e 1–2 mutações (risco alto). O rótulo é calculado por CÓDIGO
 comparando a intenção com os efeitos (``label``), nunca escrito à mão.
 
-    python -m src.svm_dataset --effects results/svm_effects.jsonl --out results/svm_dataset --format risk --seed 42
+    python -m src.svm_dataset --effects results/svm_effects.jsonl results/svm_effects_synth.jsonl \\
+        --out results/svm_dataset --format risk --seed 42 --min-sol 0.001
 """
 import argparse
 import hashlib
@@ -25,8 +26,10 @@ SOL_DUST = 5_000_000
 MAX_EFFECTS = 60
 AMOUNT_TOLERANCE = Decimal("1.01")
 
-ACTIONS = ("transfer_sol", "transfer_token", "swap", "approve", "close", "create", "other")
-MUTATIONS = ("recipient_mismatch", "amount_understated", "asset_mismatch", "undeclared_authority_change",
+ACTIONS = ("transfer_sol", "transfer_token", "swap", "approve", "set_authority", "close", "create", "other")
+U64_MAX = 2 ** 64 - 1
+UNLIMITED = "unlimited"
+MUTATIONS = ("recipient_mismatch", "amount_understated", "asset_mismatch", "approval_exceeds_intent", "undeclared_authority_change",
              "undeclared_approval", "undeclared_close", "injected_instruction")
 # Share of all mutated examples any one signal may take.
 MAX_SIGNAL_SHARE = 0.30
@@ -151,7 +154,9 @@ def signer_view(record):
         if not signer_owned(a["account"]):
             continue
         if a["field"] == "delegate" and a.get("post"):
-            approvals.append({"account": a["account"], "delegate": a["post"], "mint": owned.get(a["account"], {}).get("mint")})
+            amount = owned.get(a["account"], {}).get("delegated_amount")
+            approvals.append({"account": a["account"], "delegate": a["post"], "mint": owned.get(a["account"], {}).get("mint"),
+                              "amount": int(amount) if amount is not None else None})
         else:
             authority.append(a)
     closed = [c for c in p.get("closed", []) if signer_owned(c)]
@@ -192,6 +197,10 @@ def derive_intent(record):
     elif v["closed"] and not outs:
         action = "close"
         asset = v["owned"].get(v["closed"][0], {}).get("mint")
+        recipient = _rent_destination(v, record)
+    elif v["authority"] and not outs and not v["approvals"]:
+        a = v["authority"][0]
+        action, asset, recipient = "set_authority", v["owned"].get(a["account"], {}).get("mint"), a.get("post")
     elif outs or v["approvals"] or v["authority"] or v["closed"]:
         action = "other"
     if action is None:
@@ -200,8 +209,20 @@ def derive_intent(record):
     if action in ("transfer_sol", "transfer_token", "swap"):
         decimals = v["decimals"].get(asset)
         amount = _units(v["out"][asset], decimals)
+    elif action == "approve" and v["approvals"][0]["amount"] is not None:
+        decimals = v["decimals"].get(asset)
+        amount = _approval_text(v["approvals"][0]["amount"], decimals)
     return {"action": action, "asset": asset, "amount": amount, "decimals": decimals,
             "recipient": recipient, "allowed_effects": _effects_of(v)}
+
+
+def _approval_text(n, decimals):
+    return UNLIMITED if n == U64_MAX else _units(n, decimals)
+
+
+def _rent_destination(v, record):
+    """Who receives the lamports of closed accounts: a non-signer, else the signer itself."""
+    return v["recipients"].get(SOL) or (record.get("fee_payer") if v["in"].get(SOL) else None)
 
 
 def _effects_of(v):
@@ -257,6 +278,21 @@ def label(intent, record, metadata):
         delegates = [a["delegate"] for a in v["approvals"]]
         if delegates and intent["recipient"] not in delegates:
             found.append(("recipient_mismatch", f"intent approves {intent['recipient']} but the simulation sets delegate {delegates[0]}"))
+    if action == "approve" and intent.get("amount") not in (None, UNLIMITED):
+        declared = _base(intent["amount"], intent.get("decimals"))
+        for a in v["approvals"]:
+            if a["amount"] is not None and Decimal(a["amount"]) > declared:
+                actual = _approval_text(a["amount"], intent.get("decimals"))
+                found.append(("approval_exceeds_intent", f"intent approves {intent['amount']} but the simulation lets {a['delegate']} spend {actual} of {_short(a['mint'])}"))
+                break
+    if action == "close" and intent.get("recipient"):
+        real = _rent_destination(v, record)
+        if real and real != intent["recipient"]:
+            found.append(("recipient_mismatch", f"intent sends the closed account's rent to {intent['recipient']} but the simulation sends it to {real}"))
+    if action == "set_authority" and intent.get("recipient"):
+        posts = [a.get("post") for a in v["authority"]]
+        if posts and intent["recipient"] not in posts:
+            found.append(("recipient_mismatch", f"intent hands authority to {intent['recipient']} but the simulation sets {posts[0]}"))
     for a in v["approvals"]:
         if "approve:" + a["delegate"] not in allowed:
             found.append(("undeclared_approval", f"simulation sets delegate {a['delegate']} on signer token account {_short(a['account'])}; the intent does not declare it"))
@@ -327,9 +363,22 @@ def mutate(kind, intent, record, rng):
         if not any(e.startswith(prefix) for e in allowed):
             return None
         m["allowed_effects"] = [e for e in allowed if not e.startswith(prefix)]
-        primary = {"approve:": "approve", "close:": "close"}.get(prefix)
+        primary = {"approve:": "approve", "close:": "close", "authority_change:": "set_authority"}.get(prefix)
         if m["action"] == primary:
             m.update(action="other", recipient=None)
+    elif kind == "approval_exceeds_intent":
+        if m["action"] != "approve" or not v["approvals"] or v["approvals"][0]["amount"] is None:
+            return None
+        actual = v["approvals"][0]["amount"]
+        if actual == U64_MAX:
+            low = rng.randint(1, 10 ** rng.randint(2, 9))
+        elif actual >= 2:
+            low = int(Decimal(actual) * Decimal(rng.choice(("0.01", "0.1", "0.25", "0.5", "0.9"))))
+        else:
+            return None
+        if low <= 0:
+            return None
+        m["amount"] = _units(low, m.get("decimals"))
     elif kind == "injected_instruction":
         meta = {rng.choice(INJECTION_FIELDS): rng.choice(INJECTIONS)}
     else:
@@ -348,6 +397,7 @@ EVIDENCE = {
     "recipient_mismatch": ["intent.recipient", "simulated_effects"],
     "amount_understated": ["intent.amount", "simulated_effects"],
     "asset_mismatch": ["intent.asset", "simulated_effects"],
+    "approval_exceeds_intent": ["intent.amount", "simulated_effects.token_accounts"],
     "undeclared_approval": ["intent.allowed_effects", "simulated_effects.authority"],
     "undeclared_authority_change": ["intent.allowed_effects", "simulated_effects.authority"],
     "undeclared_close": ["intent.allowed_effects", "simulated_effects.closed"],
@@ -386,34 +436,54 @@ def _too_large(record):
     return sum(len(p.get(k, [])) for k in ("sol", "tokens", "authority", "closed", "created")) > MAX_EFFECTS
 
 
-def build(records, fmt="risk", seed=42):
+def source_of(record):
+    return record.get("source") or "mainnet"
+
+
+def build(records, fmt="risk", seed=42, min_sol=0.001):
     """({"train"|"valid"|"test": [{"tx_digest", "example"}]}, stats)."""
     if fmt not in ("risk", "decision"):
         raise ValueError(fmt)
     rng = random.Random(seed)
+    min_lamports = Decimal(str(min_sol)).scaleb(SOL_DECIMALS)
     splits = {"train": [], "valid": [], "test": []}
     skipped, per_signal, per_action = Counter(), Counter(), Counter()
+    per_source = {}
     usable = []
     seen = set()
+
+    def src_stats(r):
+        return per_source.setdefault(source_of(r), {"records": 0, "used": 0, "examples": 0, "skipped": Counter(), "per_signal": Counter()})
+
+    def skip(r, why):
+        skipped[why] += 1
+        src_stats(r)["skipped"][why] += 1
+
     for r in records:
+        src_stats(r)["records"] += 1
         if r.get("tx_digest") in seen:
-            skipped["duplicate"] += 1
+            skip(r, "duplicate")
             continue
         seen.add(r.get("tx_digest"))
         if _too_large(r):
-            skipped["too_many_effects"] += 1
+            skip(r, "too_many_effects")
             continue
         intent = derive_intent(r)
         if intent is None:
-            skipped["no_derivable_intent"] += 1
+            skip(r, "no_derivable_intent")
+            continue
+        if intent["action"] == "transfer_sol" and signer_view(r)["out"][SOL] < min_lamports:
+            skip(r, "below_min_sol")
             continue
         if label(intent, r, {})[0]:
-            skipped["honest_label_not_clean"] += 1
+            skip(r, "honest_label_not_clean")
             continue
         usable.append((r, intent))
     cap = max(1, math.ceil(MAX_SIGNAL_SHARE * 1.5 * len(usable)))
     for r, intent in usable:
         split = splits[split_of(r["tx_digest"], seed)]
+        ss = src_stats(r)
+        ss["used"] += 1
         per_action[intent["action"]] += 1
         examples = []
         metadata = {"memo": rng.choice(BENIGN_MEMOS)} if rng.random() < 0.5 else {}
@@ -431,13 +501,17 @@ def build(records, fmt="risk", seed=42):
         candidates.sort(key=lambda c: (c[0], c[1]))
         for _, _, kind, (m_intent, m_meta), reasons in candidates[:rng.choice((1, 2))]:
             per_signal[kind] += 1
+            ss["per_signal"][kind] += 1
             examples.append((m_intent, m_meta, [kind], reasons))
         per_signal["none"] += 1
+        ss["per_signal"]["none"] += 1
+        ss["examples"] += len(examples)
         for i_, meta, signals, reasons in examples:
             split.append({"tx_digest": r["tx_digest"], "example": to_chat(i_, r, meta, signals, reasons, fmt)})
-    stats = {"format": fmt, "seed": seed, "records": len(records), "used_records": len(usable),
+    stats = {"format": fmt, "seed": seed, "min_sol": min_sol, "records": len(records), "used_records": len(usable),
              "skipped": dict(skipped), "examples": sum(len(v) for v in splits.values()),
              "per_signal": dict(per_signal), "per_action": dict(per_action), "signal_cap": cap,
+             "per_source": {k: {**v, "skipped": dict(v["skipped"]), "per_signal": dict(v["per_signal"])} for k, v in per_source.items()},
              "splits": {k: {"examples": len(v), "txs": len({x["tx_digest"] for x in v})} for k, v in splits.items()}}
     return splits, stats
 
@@ -456,12 +530,14 @@ def read_jsonl(path):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Gera o dataset de treino (chat JSONL) a partir dos efeitos do aval-svm.")
-    p.add_argument("--effects", default="results/svm_effects.jsonl")
+    p.add_argument("--effects", nargs="+", action="extend", help="um ou mais JSONL de efeitos (padrão: results/svm_effects.jsonl)")
     p.add_argument("--out", default="results/svm_dataset")
     p.add_argument("--format", choices=("risk", "decision"), default="risk")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--min-sol", type=float, default=0.001, help="descarta transfer_sol abaixo disto (spam)")
     a = p.parse_args(argv)
-    splits, stats = build(list(read_jsonl(a.effects)), a.format, a.seed)
+    records = [r for path in (a.effects or ["results/svm_effects.jsonl"]) for r in read_jsonl(path)]
+    splits, stats = build(records, a.format, a.seed, a.min_sol)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     for name, rows in splits.items():

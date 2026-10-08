@@ -186,16 +186,31 @@ algum signatário além da taxa:
 - RPC público (`https://api.mainnet-beta.solana.com`) funciona, mas limita `getBlock`; use
   `--delay-ms 400` ou um RPC próprio.
 
+Efeitos de permissão (approve, set_authority, close) são raros numa amostra da mainnet; o
+`dataset-synth` monta essas transações localmente (SPL Token e Token-2022 embutidos no LiteSVM,
+estado em memória, sem rede) e as simula com o mesmo motor — approve limitado e ilimitado,
+troca de dono/closeAuthority, close com o rent indo para terceiros, transfer_checked para um
+estranho e variantes benignas. Mesmo esquema, com `"source": "synthetic"`:
+
+```bash
+./svm/target/release/aval-svm dataset-synth --count 300 --out results/svm_effects_synth.jsonl --seed 42
+```
+
 Depois, o lab deriva de cada efeito uma intenção **honesta** (ação, ativo, valor, destinatário,
 efeitos permitidos) e gera mutações rotuladas **por código** (comparando intenção × efeitos):
 `recipient_mismatch`, `amount_understated`, `asset_mismatch`, `undeclared_approval`,
-`undeclared_authority_change`, `undeclared_close` e `injected_instruction` (instrução para a IA
+`undeclared_authority_change`, `undeclared_close`, `approval_exceeds_intent` (intenção declara
+um approve limitado, a simulação mostra um maior ou ilimitado) e `injected_instruction` (instrução para a IA
 escondida em memo/metadados, en e pt-BR). Cerca de 1 honesto : 1–2 mutados por transação,
 com teto por sinal; a divisão train/valid/test (80/10/10) é por `tx_digest`.
 
 ```bash
-python -m src.svm_dataset --effects results/svm_effects.jsonl --out results/svm_dataset --format risk --seed 42
+python -m src.svm_dataset --effects results/svm_effects.jsonl results/svm_effects_synth.jsonl \
+    --out results/svm_dataset --format risk --seed 42 --min-sol 0.001
 ```
+
+- `--min-sol` (padrão 0.001) descarta transfer_sol menores que isso (spam/gorjetas); a contagem
+  vai para `stats.json`, que também separa tudo por origem (`mainnet` / `synthetic`).
 
 - Saída em chat JSONL (`messages` system/user/assistant), aceita por MLX-LM e Unsloth:
   `results/svm_dataset/{train,valid,test}.jsonl` + `stats.json` (contagens por split, por sinal,
