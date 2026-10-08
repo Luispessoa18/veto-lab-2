@@ -208,17 +208,17 @@ class VetoPipeline:
         if not isinstance(serialized, str) or not serialized:
             return result("REVIEW", "solana_simulation", "SOLANA_TRANSACTION_MISSING")
         options = {"encoding": spec.get("encoding", "base64"), "commitment": spec.get("commitment", "confirmed"),
-                   "replaceRecentBlockhash": True, "sigVerify": False, "innerInstructions": True,
-                   # aval-svm: pede os dois mundos (sem isso, mundos divergentes viram erro -32005)
-                   "aval": {"worlds": True}}
+                   "replaceRecentBlockhash": True, "sigVerify": False, "innerInstructions": True}
         body, engine, latency, last_error = None, None, None, None
         for engine, rpc_url in targets:
             started = time.perf_counter()
             timeout = (self.config.get("aval_svm_timeout_seconds", 12) if engine == "aval-svm"
                        else self.config.get("solana_timeout_seconds", 30))
             try:
+                # so o aval-svm pede os dois mundos (sem isso, mundos divergentes viram erro -32005)
+                sent = {**options, "aval": {"worlds": True}} if engine == "aval-svm" else dict(options)
                 response = requests.post(rpc_url, json={"jsonrpc": "2.0", "id": request_id,
-                                         "method": "simulateTransaction", "params": [serialized, options]},
+                                         "method": "simulateTransaction", "params": [serialized, sent]},
                                          timeout=timeout)
                 response.raise_for_status(); body = response.json()
                 if not isinstance(body, dict):
