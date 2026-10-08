@@ -33,11 +33,16 @@ pub enum Case {
     BenignTransfer,
     BenignApprove,
     BenignClose,
+    /// A real transfer plus a permission change in the same transaction.
+    BundledTransferApprove,
+    BundledTransferSetOwner,
+    BundledTransferClose,
 }
 
-pub const CASES: [Case; 9] = [
+pub const CASES: [Case; 12] = [
     Case::ApproveUnlimited, Case::ApproveBounded, Case::SetOwner, Case::SetCloseAuthority, Case::CloseToStranger,
     Case::TransferToStranger, Case::BenignTransfer, Case::BenignApprove, Case::BenignClose,
+    Case::BundledTransferApprove, Case::BundledTransferSetOwner, Case::BundledTransferClose,
 ];
 
 impl Case {
@@ -52,6 +57,9 @@ impl Case {
             Case::BenignTransfer => "benign_transfer",
             Case::BenignApprove => "benign_approve",
             Case::BenignClose => "benign_close",
+            Case::BundledTransferApprove => "bundled_transfer_approve",
+            Case::BundledTransferSetOwner => "bundled_transfer_set_owner",
+            Case::BundledTransferClose => "bundled_transfer_close",
         }
     }
 }
@@ -88,6 +96,8 @@ pub struct Scenario {
     pub user_token: Address,
     pub mint: Address,
     pub counterparty: Address,
+    /// Receiver of the hidden permission in bundled cases.
+    pub stranger: Address,
     pub amount: u64,
     pub decimals: u8,
     pub accounts: Vec<(Address, Account)>,
@@ -118,17 +128,20 @@ fn wallet(lamports: u64) -> Account {
 }
 
 // SPL Token instruction tags (identical in Token-2022).
-const APPROVE: u8 = 4;
+const APPROVE_CHECKED: u8 = 13;
 const SET_AUTHORITY: u8 = 6;
 const CLOSE_ACCOUNT: u8 = 9;
 const TRANSFER_CHECKED: u8 = 12;
 const AUTHORITY_ACCOUNT_OWNER: u8 = 2;
 const AUTHORITY_CLOSE_ACCOUNT: u8 = 3;
 
-fn approve(program: Address, source: Address, delegate: Address, owner: Address, amount: u64) -> Instruction {
-    let mut data = vec![APPROVE];
+/// ApproveChecked names the mint, so its decimals are in the simulated state.
+fn approve_checked(program: Address, source: Address, mint: Address, delegate: Address, owner: Address, amount: u64, decimals: u8) -> Instruction {
+    let mut data = vec![APPROVE_CHECKED];
     data.extend_from_slice(&amount.to_le_bytes());
-    Instruction::new_with_bytes(program, &data, vec![AccountMeta::new(source, false), AccountMeta::new_readonly(delegate, false), AccountMeta::new_readonly(owner, true)])
+    data.push(decimals);
+    Instruction::new_with_bytes(program, &data, vec![AccountMeta::new(source, false), AccountMeta::new_readonly(mint, false),
+        AccountMeta::new_readonly(delegate, false), AccountMeta::new_readonly(owner, true)])
 }
 
 fn set_authority(program: Address, account: Address, owner: Address, kind: u8, new: Address) -> Instruction {
@@ -162,23 +175,38 @@ pub fn scenario(case: Case, rng: &mut Rng) -> Scenario {
         (mint, mint_account(program, decimals, balance.saturating_mul(4))),
         (user_token, token_account(program, mint, user, if closing { 0 } else { balance })),
     ];
-    let (ix, amount) = match case {
-        Case::ApproveUnlimited => (approve(program, user_token, counterparty, user, u64::MAX), u64::MAX),
-        Case::ApproveBounded | Case::BenignApprove => (approve(program, user_token, counterparty, user, amount), amount),
-        Case::SetOwner => (set_authority(program, user_token, user, AUTHORITY_ACCOUNT_OWNER, counterparty), 0),
-        Case::SetCloseAuthority => (set_authority(program, user_token, user, AUTHORITY_CLOSE_ACCOUNT, counterparty), 0),
-        Case::CloseToStranger => (close_account(program, user_token, counterparty, user), 0),
-        Case::BenignClose => (close_account(program, user_token, user, user), 0),
-        Case::TransferToStranger | Case::BenignTransfer => {
-            let dest = rng.key();
-            accounts.push((dest, token_account(program, mint, counterparty, rng.range(0, balance))));
-            (transfer_checked(program, user_token, mint, dest, user, amount, decimals), amount)
+    let stranger = rng.key();
+    let transfer_to_counterparty = |accounts: &mut Vec<(Address, Account)>, rng: &mut Rng, amount: u64| {
+        let dest = rng.key();
+        accounts.push((dest, token_account(program, mint, counterparty, rng.range(0, balance))));
+        transfer_checked(program, user_token, mint, dest, user, amount, decimals)
+    };
+    let (ixs, amount) = match case {
+        Case::ApproveUnlimited => (vec![approve_checked(program, user_token, mint, counterparty, user, u64::MAX, decimals)], u64::MAX),
+        Case::ApproveBounded | Case::BenignApprove => (vec![approve_checked(program, user_token, mint, counterparty, user, amount, decimals)], amount),
+        Case::SetOwner => (vec![set_authority(program, user_token, user, AUTHORITY_ACCOUNT_OWNER, counterparty)], 0),
+        Case::SetCloseAuthority => (vec![set_authority(program, user_token, user, AUTHORITY_CLOSE_ACCOUNT, counterparty)], 0),
+        Case::CloseToStranger => (vec![close_account(program, user_token, counterparty, user)], 0),
+        Case::BenignClose => (vec![close_account(program, user_token, user, user)], 0),
+        Case::TransferToStranger | Case::BenignTransfer => (vec![transfer_to_counterparty(&mut accounts, rng, amount)], amount),
+        Case::BundledTransferApprove => {
+            let t = transfer_to_counterparty(&mut accounts, rng, amount);
+            (vec![t, approve_checked(program, user_token, mint, stranger, user, u64::MAX, decimals)], amount)
+        }
+        Case::BundledTransferSetOwner => {
+            let t = transfer_to_counterparty(&mut accounts, rng, amount);
+            (vec![t, set_authority(program, user_token, user, AUTHORITY_ACCOUNT_OWNER, stranger)], amount)
+        }
+        // Drain the whole balance, then close the emptied account with the rent going elsewhere.
+        Case::BundledTransferClose => {
+            let t = transfer_to_counterparty(&mut accounts, rng, balance);
+            (vec![t, close_account(program, user_token, stranger, user)], balance)
         }
     };
     let blockhash = Hash::new_from_array(rng.key().to_bytes());
-    let msg = Message::new_with_blockhash(&[ix], Some(&user), &blockhash);
+    let msg = Message::new_with_blockhash(&ixs, Some(&user), &blockhash);
     let tx = VersionedTransaction { signatures: vec![Default::default()], message: VersionedMessage::Legacy(msg) };
-    Scenario { case, token_program: program, user, user_token, mint, counterparty, amount, decimals, accounts, tx }
+    Scenario { case, token_program: program, user, user_token, mint, counterparty, stranger, amount, decimals, accounts, tx }
 }
 
 /// Records for `count` scenarios (cases in rotation) and how many failed to simulate.
@@ -300,13 +328,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approvals_carry_the_mint_decimals() {
+        for case in [Case::ApproveUnlimited, Case::ApproveBounded, Case::BenignApprove] {
+            let (sc, rec) = sim(case, 8).await;
+            assert_eq!(rec.token_accounts[&sc.user_token.to_string()].decimals, Some(sc.decimals), "{case:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bundled_cases_transfer_and_hide_a_permission_change() {
+        for seed in [9, 10] {
+            for case in [Case::BundledTransferApprove, Case::BundledTransferSetOwner, Case::BundledTransferClose] {
+                let (sc, rec) = sim(case, seed).await;
+                let out = rec.projection.tokens.iter().find(|t| t.owner == sc.user.to_string()).unwrap_or_else(|| panic!("{case:?}"));
+                let moved = out.pre.parse::<u64>().unwrap() - out.post.parse::<u64>().unwrap();
+                assert_eq!(moved, sc.amount, "{case:?}");
+                assert!(rec.projection.tokens.iter().any(|t| t.owner == sc.counterparty.to_string()), "{case:?}");
+                match case {
+                    Case::BundledTransferApprove => assert_eq!(authority(&rec, "delegate"), Some((None, Some(sc.stranger.to_string())))),
+                    Case::BundledTransferSetOwner => assert_eq!(authority(&rec, "owner"), Some((Some(sc.user.to_string()), Some(sc.stranger.to_string())))),
+                    _ => {
+                        assert_eq!(rec.projection.closed, vec![sc.user_token.to_string()]);
+                        let gain = rec.projection.sol.iter().find(|d| d.account == sc.stranger.to_string()).unwrap();
+                        assert_eq!(gain.post - gain.pre, TOKEN_ACCOUNT_RENT);
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn generate_rotates_cases_and_marks_records_synthetic() {
-        let (records, failed) = generate(18, 42).await.unwrap();
-        assert_eq!((records.len(), failed), (18, 0));
+        let (records, failed) = generate(24, 42).await.unwrap();
+        assert_eq!((records.len(), failed), (24, 0));
         assert!(records.iter().all(|r| r.source == "synthetic"));
         let cases: std::collections::HashSet<_> = records.iter().filter_map(|r| r.case.clone()).collect();
         assert_eq!(cases.len(), CASES.len());
         let digests: std::collections::HashSet<_> = records.iter().map(|r| r.tx_digest.clone()).collect();
-        assert_eq!(digests.len(), 18);
+        assert_eq!(digests.len(), 24);
     }
 }

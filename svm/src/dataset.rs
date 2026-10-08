@@ -5,7 +5,7 @@ use crate::cache::Cache;
 use crate::decode::{decode, Encoding};
 use crate::engine::{Engine, EngineError, SimReport};
 use crate::pool::Pool;
-use crate::project::{project, token_delegated_amount, token_mint_owner, Projection};
+use crate::project::{decimals_of, mint_decimals, project, token_delegated_amount, token_mint_owner, Projection};
 use crate::shadow::VOTE_PROGRAM;
 use crate::source::SourceError;
 use crate::upstream::Upstream;
@@ -34,6 +34,33 @@ pub struct TokenAccount {
     /// Amount the delegate may move after the transaction (base units), when a delegate is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_amount: Option<String>,
+    /// Decimals of the mint, when its account was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
+}
+
+/// Mints whose decimals the record lacks (token deltas and token accounts).
+pub fn missing_mints(rec: &EffectRecord) -> Vec<Address> {
+    let from_tokens = rec.projection.tokens.iter().filter(|t| t.decimals.is_none()).map(|t| &t.mint);
+    let from_accounts = rec.token_accounts.values().filter(|t| t.decimals.is_none()).map(|t| &t.mint);
+    let mut out: Vec<Address> = from_tokens.chain(from_accounts).filter_map(|m| m.parse().ok()).collect();
+    out.sort_by_key(|k| k.to_string());
+    out.dedup();
+    out
+}
+
+/// Fills missing decimals from mint accounts read after the simulation.
+pub fn fill_decimals(rec: &mut EffectRecord, mints: &HashMap<Address, Option<Account>>) {
+    let lookup = |m: &str| m.parse::<Address>().ok().and_then(|k| mints.get(&k)?.as_ref().and_then(mint_decimals));
+    for t in rec.projection.tokens.iter_mut().filter(|t| t.decimals.is_none()) { t.decimals = lookup(&t.mint); }
+    for t in rec.token_accounts.values_mut().filter(|t| t.decimals.is_none()) { t.decimals = lookup(&t.mint); }
+}
+
+/// The finalized slot to start from. Errors never carry the upstream URL (it may hold an API key).
+pub async fn first_slot(up: &Upstream, retries: u32) -> anyhow::Result<u64> {
+    let v = call_with_retry(up, "getSlot", json!([{"commitment": "finalized"}]), retries).await
+        .map_err(|e| anyhow::anyhow!("getSlot failed: {}", short(&e.to_string())))?;
+    v.as_u64().ok_or_else(|| anyhow::anyhow!("getSlot returned no slot"))
 }
 
 /// One JSON line of the effects file.
@@ -106,7 +133,8 @@ pub fn token_accounts(p: &Projection, pre: &HashMap<Address, Option<Account>>, p
             .or_else(|| post.get(&k).and_then(token_mint_owner));
         if let Some((mint, owner)) = found {
             let delegated_amount = post.get(&k).and_then(token_delegated_amount).map(|n| n.to_string());
-            out.insert(acct.clone(), TokenAccount { mint, owner, delegated_amount });
+            let decimals = mint.parse::<Address>().ok().and_then(|m| decimals_of(&m, pre));
+            out.insert(acct.clone(), TokenAccount { mint, owner, delegated_amount, decimals });
         }
     }
     out
@@ -244,11 +272,11 @@ pub fn block_params(slot: u64) -> Value {
         "rewards": false, "commitment": "finalized"}])
 }
 
-async fn call_with_retry(up: &Upstream, method: &str, params: Value) -> Result<Value, SourceError> {
+async fn call_with_retry(up: &Upstream, method: &str, params: Value, retries: u32) -> Result<Value, SourceError> {
     let mut attempt = 0;
     loop {
         match up.call(method, params.clone()).await {
-            Err(e) if block_failure(&e) == BlockFailure::Retry && attempt < RETRIES => {
+            Err(e) if block_failure(&e) == BlockFailure::Retry && attempt < retries => {
                 eprintln!("{method}: {} — retrying in {:?}", short(&e.to_string()), backoff(attempt));
                 tokio::time::sleep(backoff(attempt)).await;
                 attempt += 1;
@@ -292,8 +320,7 @@ pub async fn run(a: &Args) -> anyhow::Result<()> {
     let up = Upstream::new(&a.upstream, "confirmed", 30_000);
     let cache = Cache::new(up.clone(), Duration::from_millis(2000)).with_program_ttl(Duration::from_secs(600));
     let engine = Engine::new(cache, Pool::new(4, 5000));
-    let mut slot = call_with_retry(&up, "getSlot", json!([{"commitment": "finalized"}])).await?
-        .as_u64().ok_or_else(|| anyhow::anyhow!("getSlot returned no slot"))?;
+    let mut slot = first_slot(&up, RETRIES).await?;
     let mut tried = 0usize;
     while st.kept < a.target && st.blocks < a.max_blocks && tried < a.max_blocks * 4 {
         tried += 1;
@@ -301,7 +328,7 @@ pub async fn run(a: &Args) -> anyhow::Result<()> {
         slot = slot.saturating_sub(1);
         // Skipped slots come back at once; pace block reads too so they do not hit the per-method limit.
         tokio::time::sleep(Duration::from_millis(a.delay_ms)).await;
-        let block = call_with_retry(&up, "getBlock", block_params(s)).await;
+        let block = call_with_retry(&up, "getBlock", block_params(s), RETRIES).await;
         let block = match block {
             Ok(b) if b.is_null() => continue,
             Ok(b) => b,
@@ -332,7 +359,14 @@ pub async fn run(a: &Args) -> anyhow::Result<()> {
                 Ok(report) => {
                     let failed = report.outcome.err.is_some();
                     match build_record(&report, meta, s, a.with_tx.then_some(b64.as_str())) {
-                        Some(rec) => {
+                        Some(mut rec) => {
+                            // Mints outside the transaction (plain transfer/approve): read them for decimals.
+                            let missing = missing_mints(&rec);
+                            if !missing.is_empty() {
+                                if let Ok(got) = engine.cache().get_many(&missing, false).await {
+                                    fill_decimals(&mut rec, &got.accounts);
+                                }
+                            }
                             writeln!(file, "{}", serde_json::to_string(&rec)?)?;
                             file.flush()?;
                             seen.insert(rec.tx_digest);
@@ -437,7 +471,7 @@ mod tests {
         assert!(touches_signers(&tok(2), &meta(), 5000, &BTreeMap::new()));
         assert!(!touches_signers(&tok(7), &meta(), 5000, &BTreeMap::new()));
         let approve = Projection { authority: vec![AuthorityChange { account: s(20), field: "delegate".into(), pre: None, post: Some(s(9)) }], ..Default::default() };
-        let owned = BTreeMap::from([(s(20), TokenAccount { mint: s(30), owner: s(1), delegated_amount: None })]);
+        let owned = BTreeMap::from([(s(20), TokenAccount { mint: s(30), owner: s(1), delegated_amount: None, decimals: None })]);
         assert!(touches_signers(&approve, &meta(), 5000, &owned));
         assert!(!touches_signers(&approve, &meta(), 5000, &BTreeMap::new()));
         let closed = Projection { closed: vec![s(20)], ..Default::default() };
@@ -457,7 +491,7 @@ mod tests {
         assert_eq!(r.tx_digest, "ab".repeat(32));
         assert_eq!(r.programs, vec![s(50), s(51)]);
         assert_eq!(r.projection, project(&pre.iter().cloned().collect(), &post.iter().cloned().collect()));
-        assert_eq!(r.token_accounts, BTreeMap::from([(acct.to_string(), TokenAccount { mint: mint.to_string(), owner: s(1), delegated_amount: None })]));
+        assert_eq!(r.token_accounts, BTreeMap::from([(acct.to_string(), TokenAccount { mint: mint.to_string(), owner: s(1), delegated_amount: None, decimals: None })]));
         let v = serde_json::to_value(&r).unwrap();
         assert!(v.get("tx").is_none());
         for f in ["tx_digest", "slot", "signers", "fee_payer", "programs", "projection", "units"] { assert!(v.get(f).is_some(), "{f}"); }
@@ -477,11 +511,47 @@ mod tests {
         after.data[72] = 1;
         after.data[76..108].copy_from_slice(spender.as_ref());
         after.data[121..129].copy_from_slice(&u64::MAX.to_le_bytes());
-        let pre = HashMap::from([(acct, Some(token_account(mint, user)))]);
+        let pre = HashMap::from([(acct, Some(token_account(mint, user))), (mint, Some(mint_account(6)))]);
         let post = HashMap::from([(acct, after)]);
         let p = project(&pre, &post);
         let t = token_accounts(&p, &pre, &post);
-        assert_eq!(t[&acct.to_string()], TokenAccount { mint: mint.to_string(), owner: user.to_string(), delegated_amount: Some(u64::MAX.to_string()) });
+        assert_eq!(t[&acct.to_string()], TokenAccount { mint: mint.to_string(), owner: user.to_string(), delegated_amount: Some(u64::MAX.to_string()), decimals: Some(6) });
+    }
+
+    fn mint_account(decimals: u8) -> Account {
+        let mut d = vec![0u8; 82];
+        d[44] = decimals;
+        d[45] = 1;
+        Account { lamports: 1_461_600, data: d, owner: Address::from_str(TOKEN_PROGRAM).unwrap(), executable: false, rent_epoch: 0 }
+    }
+
+    #[test]
+    fn missing_decimals_are_filled_from_mint_accounts() {
+        let (acct, mint, other_mint, user) = (key(20), key(30), key(31), key(1));
+        let pre = vec![(user, Some(Account { lamports: 1_000_000, ..Account::default() })), (acct, Some(token_account(mint, user))),
+                       (key(21), Some(token_account(other_mint, user)))];
+        let mut moved = token_account(other_mint, user);
+        moved.data[64..72].copy_from_slice(&0u64.to_le_bytes());
+        let mut before = token_account(other_mint, user);
+        before.data[64..72].copy_from_slice(&7u64.to_le_bytes());
+        let pre: Vec<_> = pre.into_iter().map(|(k, a)| if k == key(21) { (k, Some(before.clone())) } else { (k, a) }).collect();
+        let post = vec![(user, Account { lamports: 495_000, ..Account::default() }), (acct, Account::default()), (key(21), moved)];
+        let mut r = build_record(&report(None, pre, post), meta(), 1, None).unwrap();
+        let mut want = vec![mint, other_mint];
+        want.sort_by_key(|k| k.to_string());
+        assert_eq!(missing_mints(&r), want);
+        fill_decimals(&mut r, &HashMap::from([(mint, Some(mint_account(9))), (other_mint, Some(mint_account(2)))]));
+        assert_eq!(r.token_accounts[&acct.to_string()].decimals, Some(9));
+        assert_eq!(r.projection.tokens[0].decimals, Some(2));
+        assert!(missing_mints(&r).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_slot_never_prints_the_api_key() {
+        let up = Upstream::new("http://127.0.0.1:1/?api-key=SECRET123", "confirmed", 2000);
+        let e = first_slot(&up, 0).await.unwrap_err().to_string();
+        assert!(!e.contains("SECRET123"), "{e}");
+        assert!(e.contains("getSlot"), "{e}");
     }
 
     #[test]

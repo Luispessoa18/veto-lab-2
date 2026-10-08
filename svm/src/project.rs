@@ -67,8 +67,12 @@ pub fn token_delegated_amount(a: &Account) -> Option<u64> {
 }
 
 /// Mint layout: decimals at byte 44.
-fn decimals_of(mint: &Address, pre: &HashMap<Address, Option<Account>>) -> Option<u8> {
-    let m = pre.get(mint)?.as_ref()?;
+pub fn decimals_of(mint: &Address, pre: &HashMap<Address, Option<Account>>) -> Option<u8> {
+    mint_decimals(pre.get(mint)?.as_ref()?)
+}
+
+/// Decimals of a mint account (byte 44), `None` for anything that is not a token mint.
+pub fn mint_decimals(m: &Account) -> Option<u8> {
     (is_token_program(&m.owner) && m.data.len() >= 82).then(|| m.data[44])
 }
 
@@ -94,7 +98,7 @@ pub fn project(pre: &HashMap<Address, Option<Account>>, post: &HashMap<Address, 
         let tb = before.and_then(token_view);
         let ta = token_view(after);
         let (pre_amt, post_amt) = (tb.as_ref().map_or(0, |t| t.amount), ta.as_ref().map_or(0, |t| t.amount));
-        if let Some(t) = ta.as_ref().or(tb.as_ref()) {
+        if let Some(t) = tb.as_ref().or(ta.as_ref()) {
             if pre_amt != post_amt {
                 p.tokens.push(TokenDelta { account: ks.clone(), mint: t.mint.to_string(), owner: t.owner.to_string(), pre: pre_amt.to_string(), post: post_amt.to_string(), decimals: decimals_of(&t.mint, pre) });
             }
@@ -148,6 +152,15 @@ mod tests {
         let (mint, owner) = (key(2), key(3));
         assert_eq!(token_mint_owner(&token_account(mint, owner, 1, None)), Some((mint.to_string(), owner.to_string())));
         assert_eq!(token_mint_owner(&Account { lamports: 1, ..Account::default() }), None);
+    }
+
+    #[test]
+    fn token_delta_names_the_owner_before_an_owner_change() {
+        let (acct, mint, user, thief) = (key(1), key(2), key(3), key(9));
+        let pre = HashMap::from([(acct, Some(token_account(mint, user, 10, None)))]);
+        let post = HashMap::from([(acct, token_account(mint, thief, 4, None))]);
+        let p = project(&pre, &post);
+        assert_eq!(p.tokens[0].owner, user.to_string(), "the tokens left the user's account");
     }
 
     #[test]
