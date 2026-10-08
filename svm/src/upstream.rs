@@ -6,6 +6,14 @@ use solana_address::Address;
 use std::str::FromStr;
 use std::time::Duration;
 
+/// `scheme://host[:port]` of a URL, for logs: path, query and credentials (API keys) are dropped.
+pub fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return "<url>".into() };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    format!("{scheme}://{host}")
+}
+
 #[derive(Clone)]
 pub struct Upstream {
     url: String,
@@ -105,6 +113,13 @@ mod tests {
     use super::*;
     use wiremock::matchers::{body_partial_json, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn redact_url_keeps_only_scheme_and_host() {
+        assert_eq!(redact_url("https://mainnet.helius-rpc.com/?api-key=SECRET123"), "https://mainnet.helius-rpc.com");
+        assert_eq!(redact_url("http://user:SECRET123@127.0.0.1:8899/path?x=1#f"), "http://127.0.0.1:8899");
+        assert_eq!(redact_url("not a url SECRET123"), "<url>");
+    }
 
     #[tokio::test]
     async fn parses_get_multiple_accounts() {
