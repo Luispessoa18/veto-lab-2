@@ -1,7 +1,8 @@
 use aval_svm::anchor_batcher::{escaped, give_up_on_chain_errors, read_keypair, BatchError, Batcher, Paths};
 use aval_svm::chain::{ChainError, RpcChain};
 use aval_svm::verify::{render, verify_line, Verdict};
-use aval_svm::{cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
+use aval_svm::source::AccountSource;
+use aval_svm::{quorum::QuorumSource, cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
 use clap::{Parser, Subcommand};
 use solana_address::Address;
 use std::path::PathBuf;
@@ -185,7 +186,12 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Serve { config } => {
             let c = Config::load(Some(&config))?;
             let upstream = Upstream::new(&c.upstream_url, &c.commitment, c.upstream_timeout_ms);
-            let engine = Engine::new(Cache::new(upstream.clone(), Duration::from_millis(c.cache_ttl_ms)).with_program_ttl(Duration::from_millis(c.program_ttl_ms)), Pool::new(c.pool_size, c.recycle_after));
+            let quorum = QuorumSource {
+                primary: upstream.clone(),
+                secondary: c.upstream_secondary_url.as_deref().map(|u| Upstream::new(u, &c.commitment, c.upstream_timeout_ms)),
+                max_slot_gap: c.quorum_max_slot_gap,
+            };
+            let engine = Engine::new(Cache::new(quorum, Duration::from_millis(c.cache_ttl_ms)).with_program_ttl(Duration::from_millis(c.program_ttl_ms)), Pool::new(c.pool_size, c.recycle_after));
             let preload: Vec<Address> = DEFAULT_PRELOAD.iter().map(|s| s.to_string()).chain(c.preload_programs.clone())
                 .filter_map(|s| Address::from_str(&s).ok()).collect();
             if let Err(e) = engine.cache().get_many(&preload, false).await {
@@ -193,6 +199,8 @@ async fn main() -> anyhow::Result<()> {
             }
             let listener = tokio::net::TcpListener::bind(&c.listen).await?;
             println!("aval-svm on http://{} → upstream {} (pool {}, ttl {} ms)", c.listen, c.upstream_url, c.pool_size, c.cache_ttl_ms);
+            // Never print the secondary URL: it can carry an API key.
+            println!("cross-check: {}", if engine.cache().source().upstreams() == 2 { "on (2 upstreams)" } else { "off" });
             axum::serve(listener, router(Arc::new(App { engine, upstream }))).await?;
         }
     }

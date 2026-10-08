@@ -37,7 +37,11 @@ fn ui_inner(list: &InnerInstructionsList) -> Value {
 }
 
 pub fn aval_meta(r: &SimReport) -> Value {
-    json!({"digest": r.digest, "stateSlot": r.slot, "stateSlotMin": r.min_slot, "cache": {"hits": r.hits, "misses": r.misses}, "elapsedUs": r.elapsed_us})
+    let mut meta = json!({"digest": r.digest, "stateSlot": r.slot, "stateSlotMin": r.min_slot, "cache": {"hits": r.hits, "misses": r.misses}, "elapsedUs": r.elapsed_us});
+    if r.upstreams == 2 {
+        meta["upstreams"] = json!(2);
+    }
+    meta
 }
 
 /// Static keys plus every address loaded from lookup tables.

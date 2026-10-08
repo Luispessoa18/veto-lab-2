@@ -23,6 +23,8 @@ pub struct SimReport {
     pub misses: usize,
     pub elapsed_us: u64,
     pub digest: String,
+    /// Providers each read was checked against (1 = no cross-check).
+    pub upstreams: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +118,7 @@ impl<S: AccountSource> Engine<S> {
             misses: got.misses,
             elapsed_us: started.elapsed().as_micros() as u64,
             digest: decoded.digest,
+            upstreams: self.cache.source().upstreams(),
         })
     }
 }

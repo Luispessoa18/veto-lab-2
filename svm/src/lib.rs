@@ -4,6 +4,7 @@ pub mod decode;
 pub mod gather;
 pub mod source;
 pub mod upstream;
+pub mod quorum;
 pub mod cache;
 pub mod pool;
 pub mod engine;

@@ -19,6 +19,11 @@ pub trait AccountSource: Send + Sync + 'static {
         &self,
         keys: &[Address],
     ) -> impl Future<Output = Result<(u64, Vec<Option<Account>>), SourceError>> + Send;
+
+    /// How many independent upstreams every read is checked against.
+    fn upstreams(&self) -> usize {
+        1
+    }
 }
 
 /// In-memory source for tests and fixture replay. Not used by `serve`.

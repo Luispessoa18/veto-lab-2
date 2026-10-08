@@ -230,3 +230,27 @@ async fn get_multiple_accounts_with_no_keys_is_proxied() {
     let out = post(app(&server.uri()).await, "/", gma(vec![], json!({"encoding": "base64"}))).await;
     assert_eq!(out["result"]["context"]["slot"], 1234, "{out}");
 }
+
+/// A source that claims to be cross-checked against two providers.
+struct TwoUpstreams(MemSource);
+
+impl aval_svm::source::AccountSource for TwoUpstreams {
+    async fn get_multiple(&self, keys: &[solana_address::Address]) -> Result<(u64, Vec<Option<Account>>), aval_svm::source::SourceError> {
+        self.0.get_multiple(keys).await
+    }
+    fn upstreams(&self) -> usize { 2 }
+}
+
+#[tokio::test]
+async fn aval_meta_reports_upstreams_only_when_cross_checked() {
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction", "params": [B64.encode(&raw), {"encoding": "base64", "sigVerify": false}]});
+    let mem = MemSource::new(900);
+    mem.insert(key(1), Account { lamports: 10_000_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    let engine = Engine::new(Cache::new(TwoUpstreams(mem), Duration::from_secs(60)), Pool::new(1, 100));
+    let on = router(Arc::new(App { engine, upstream: Upstream::new("http://127.0.0.1:9", "confirmed", 2000) }));
+    let out = post(on, "/", body.clone()).await;
+    assert_eq!(out["result"]["aval"]["upstreams"], 2, "{out}");
+    let off = post(app("http://127.0.0.1:9").await, "/", body).await;
+    assert!(off["result"]["aval"].get("upstreams").is_none(), "{off}");
+}
