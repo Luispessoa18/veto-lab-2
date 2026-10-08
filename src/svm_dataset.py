@@ -34,14 +34,6 @@ MUTATIONS = ("recipient_mismatch", "amount_understated", "asset_mismatch", "appr
 # Share of all mutated examples any one signal may take.
 MAX_SIGNAL_SHARE = 0.30
 
-KNOWN_ASSETS = (
-    SOL,
-    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
-    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
-    "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",  # JUP
-    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  # BONK
-)
-KNOWN_DECIMALS = dict(zip(KNOWN_ASSETS, (SOL_DECIMALS, 6, 6, 6, 5)))
 # One wallet (often a bot) must not dominate the dataset.
 MAX_RECORDS_PER_PAYER = 8
 
@@ -372,14 +364,15 @@ def _fake_address(*parts):
 TWIN_FIELDS = ("action", "asset", "amount", "decimals", "recipient")
 
 
-def mutate(kind, intent, record, rng, twins=(), metadata=None, injections=TRAIN_INJECTIONS):
+def mutate(kind, intent, record, rng, twins=(), metadata=None, injections=TRAIN_INJECTIONS, assets=()):
     """(intent, metadata) for one mutation, or None when it does not apply to this record.
 
     `twins` are (tx_digest, honest intent) of benign transfers from other records: when an
     undeclared_* mutation hides the transaction's main effect, the mutated intent becomes such a
     plausible innocent request instead of a tell-tale empty "other" (the twin's digest is
     returned under "_twin"). `metadata` is the transaction's own metadata, kept as is; an
-    injection only replaces its text, so it needs a field to live in."""
+    injection only replaces its text, so it needs a field to live in. `assets` are (asset, decimals)
+    pairs seen in honest intents (same split): asset_mismatch substitutes one of them."""
     v = signer_view(record)
     m = json.loads(json.dumps(intent))
     meta = dict(metadata or {})
@@ -403,12 +396,24 @@ def mutate(kind, intent, record, rng, twins=(), metadata=None, injections=TRAIN_
         if m["action"] not in ("transfer_sol", "transfer_token", "swap") or not m.get("asset"):
             return None
         old = m["asset"]
-        choices = [a for a in KNOWN_ASSETS if a not in v["out"] and a not in v["in"]]
-        new = rng.choice(choices)
+        pool = sorted({(a, d) for a, d in assets if a not in (old, None) and a not in v["out"] and a not in v["in"]},
+                      key=lambda x: (x[0], -1 if x[1] is None else x[1]))
+        if not pool:
+            return None
+        new, dec = rng.choice(pool)
         entry = lambda a: "sol_out" if a == SOL else "token_out:" + a  # noqa: E731
-        # The declared outflow moves with the asset, so the intent stays self-consistent.
+        # The declared outflow, the action and the amount's precision all follow the new asset,
+        # so nothing in the intent alone gives the mutation away.
         m["allowed_effects"] = [entry(new) if e == entry(old) else e for e in allowed]
-        m["asset"], m["decimals"] = new, KNOWN_DECIMALS[new]
+        m["asset"], m["decimals"] = new, dec
+        if m["action"] in ("transfer_sol", "transfer_token"):
+            m["action"] = "transfer_sol" if new == SOL else "transfer_token"
+        if m.get("amount") is not None:
+            places = dec or 0
+            q = Decimal(m["amount"]).quantize(Decimal(1).scaleb(-places), rounding=ROUND_DOWN)
+            if q <= 0:
+                q = Decimal(1).scaleb(-places)
+            m["amount"] = _units(int(q.scaleb(places)), dec)
     elif kind in ("undeclared_approval", "undeclared_authority_change", "undeclared_close"):
         prefix = {"undeclared_approval": "approve:", "undeclared_authority_change": "authority_change:",
                   "undeclared_close": "close:"}[kind]
@@ -573,6 +578,10 @@ def build(records, fmt="risk", seed=42, min_sol=0.001):
     cap = max(1, math.ceil(MAX_SIGNAL_SHARE * 1.5 * len(usable)))
     # Undeclared kinds some record supports without hiding its main effect (bundled cases, real
     # mixed transactions): for those, twins are not used at all.
+    # Substitute assets for asset_mismatch: assets of honest intents in the same split.
+    assets_by_split = {name: [(i["asset"], i["decimals"]) for r, i in usable
+                              if i["asset"] and split_of(r["tx_digest"], seed) == name] for name in splits}
+    per_group = {}
     natural = {kind for _, i in usable for kind, (prefix, primary) in UNDECLARED.items()
                if i["action"] != primary and any(e.startswith(prefix) for e in i["allowed_effects"])}
     twins_by_split = {name: twin_pool([(r, i) for r, i in usable if split_of(r["tx_digest"], seed) == name]) for name in splits}
@@ -590,18 +599,23 @@ def build(records, fmt="risk", seed=42, min_sol=0.001):
         metadata = {field: rng.choice(BENIGN_TEXT[field])} if field else {}
         examples.append((intent, metadata) + label(intent, r, metadata))
         candidates = []
+        group = per_group.setdefault(r.get("case") or source_of(r), Counter())
         for kind in MUTATIONS:
             if per_signal[kind] >= cap:
                 continue
             twins = () if kind in natural else twins_by_split[split_name]
-            out = mutate(kind, intent, r, random.Random(f"{seed}:{r['tx_digest']}:{kind}"), twins, metadata, injections)
+            out = mutate(kind, intent, r, random.Random(f"{seed}:{r['tx_digest']}:{kind}"), twins, metadata, injections,
+                         assets_by_split[split_name])
             if out is None:
                 continue
             signals, reasons = label(out[0], r, out[1])
             if signals == [kind]:
-                candidates.append((per_signal[kind], rng.random(), kind, out, reasons))
+                candidates.append(((group[kind], per_signal[kind]), rng.random(), kind, out, reasons))
+        # Least-used first within the record's group (synthetic case, or source), so every kind
+        # that applies to a shape of transaction gets used on it, not only the globally rarest.
         candidates.sort(key=lambda c: (c[0], c[1]))
         for _, _, kind, (m_intent, m_meta), reasons in candidates[:rng.choice((1, 2))]:
+            group[kind] += 1
             per_signal[kind] += 1
             ss["per_signal"][kind] += 1
             examples.append((m_intent, m_meta, [kind], reasons))

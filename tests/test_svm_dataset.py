@@ -33,6 +33,10 @@ def tok(account, mint, owner, pre, post, decimals=6):
     return {"account": account, "mint": mint, "owner": owner, "pre": str(pre), "post": str(post), "decimals": decimals}
 
 
+JUPLIKE = "J" * 43 + "6"
+# Assets seen in honest intents (the builder takes them from the same split).
+ASSETS = [("SOL", 9), (USDC, 6), (MINT, 9), (JUPLIKE, 5)]
+
 SOL_TRANSFER = rec("sol", sol=[sol(A, 2_000_000_000, 1_500_000_000 - FEE), sol(B, 0, 500_000_000)], created=[B])
 TOKEN_TRANSFER = rec("tok", sol=[sol(A, 10_000_000, 10_000_000 - FEE)],
                      tokens=[tok("X" * 44, USDC, A, 2_500_000, 0), tok("Y" * 44, USDC, B, 0, 2_500_000)])
@@ -95,7 +99,7 @@ class IntentTests(unittest.TestCase):
 class MutationTests(unittest.TestCase):
     def check(self, kind, record):
         honest = sd.derive_intent(record)
-        out = sd.mutate(kind, honest, record, random.Random(1), twins=TWINS)
+        out = sd.mutate(kind, honest, record, random.Random(1), twins=TWINS, assets=ASSETS)
         self.assertIsNotNone(out, kind)
         intent, metadata = out
         signals, reasons = sd.label(intent, record, metadata)
@@ -320,7 +324,7 @@ class PermissionTests(unittest.TestCase):
             self.assertEqual(sd.label(i, r, {}), ([], []))
 
     def check(self, kind, record):
-        out = sd.mutate(kind, sd.derive_intent(record), record, random.Random(3), twins=TWINS)
+        out = sd.mutate(kind, sd.derive_intent(record), record, random.Random(3), twins=TWINS, assets=ASSETS)
         self.assertIsNotNone(out, (kind, record["tx_digest"]))
         signals, reasons = sd.label(out[0], record, out[1])
         self.assertEqual(signals, [kind], record["tx_digest"])
@@ -478,11 +482,58 @@ class ReviewTests(unittest.TestCase):
 
     def test_asset_mismatch_rewrites_the_declared_outflow(self):
         i = sd.derive_intent(TOKEN_TRANSFER)
-        m, _ = sd.mutate("asset_mismatch", i, TOKEN_TRANSFER, random.Random(4))
-        self.assertNotIn("token_out:" + USDC, m["allowed_effects"])
-        want = "sol_out" if m["asset"] == "SOL" else "token_out:" + m["asset"]
-        self.assertIn(want, m["allowed_effects"])
-        self.assertEqual(m["decimals"], sd.KNOWN_DECIMALS[m["asset"]])
+        for seed in range(10):
+            m, _ = sd.mutate("asset_mismatch", i, TOKEN_TRANSFER, random.Random(seed), assets=ASSETS)
+            self.assertNotIn("token_out:" + USDC, m["allowed_effects"])
+            want = "sol_out" if m["asset"] == "SOL" else "token_out:" + m["asset"]
+            self.assertIn(want, m["allowed_effects"])
+            self.assertEqual(m["decimals"], dict(ASSETS)[m["asset"]])
+            self.assertEqual(m["action"], "transfer_sol" if m["asset"] == "SOL" else "transfer_token")
+
+    def test_asset_mismatch_needs_a_pool_and_rescales(self):
+        self.assertIsNone(sd.mutate("asset_mismatch", sd.derive_intent(TOKEN_TRANSFER), TOKEN_TRANSFER, random.Random(1)))
+        m, _ = sd.mutate("asset_mismatch", sd.derive_intent(SWAP), SWAP, random.Random(1), assets=[(JUPLIKE, 5)])
+        self.assertEqual((m["asset"], m["decimals"], m["action"]), (JUPLIKE, 5, "swap"))
+        m, _ = sd.mutate("asset_mismatch", dict(sd.derive_intent(SWAP), amount="0.180780727", decimals=9), SWAP,
+                         random.Random(1), assets=[(JUPLIKE, 5)])
+        self.assertEqual(m["amount"], "0.18078")
+        m, _ = sd.mutate("asset_mismatch", sd.derive_intent(SOL_TRANSFER), SOL_TRANSFER, random.Random(1), assets=[(MINT, 0)])
+        self.assertEqual((m["action"], m["amount"], m["decimals"]), ("transfer_token", "1", 0))
+        m, _ = sd.mutate("asset_mismatch", sd.derive_intent(TOKEN_TRANSFER), TOKEN_TRANSFER, random.Random(1), assets=[("SOL", 9)])
+        self.assertEqual((m["action"], m["amount"], m["decimals"]), ("transfer_sol", "2.5", 9))
+
+    def test_amounts_fit_their_decimals_and_actions_fit_their_asset(self):
+        for _, row in self.rows:
+            intent, _, _ = self.parts(row)
+            if intent["amount"] not in (None, "unlimited") and intent["decimals"] is not None:
+                places = len(intent["amount"].split(".")[1]) if "." in intent["amount"] else 0
+                self.assertLessEqual(places, intent["decimals"], intent)
+            if intent["action"] in ("transfer_sol", "transfer_token"):
+                self.assertEqual(intent["action"] == "transfer_sol", intent["asset"] == "SOL", intent)
+
+    def test_substitute_assets_come_from_honest_intents_in_the_same_split(self):
+        honest_assets = {}
+        for name, row in self.rows:
+            intent, _, answer = self.parts(row)
+            if not answer["signals"] and intent["asset"]:
+                honest_assets.setdefault(name, set()).add(intent["asset"])
+        found = 0
+        for name, row in self.rows:
+            intent, _, answer = self.parts(row)
+            if "asset_mismatch" in answer["signals"]:
+                found += 1
+                self.assertIn(intent["asset"], honest_assets.get(name, set()))
+        self.assertGreater(found, 0)
+
+    def test_injection_reaches_transfer_and_bundled_cases(self):
+        case = {r["tx_digest"]: r.get("case") for r in ShortcutTests.mix()}
+        hit = set()
+        for _, row in self.rows:
+            _, _, answer = self.parts(row)
+            if "injected_instruction" in answer["signals"]:
+                hit.add(case[row["tx_digest"]])
+        for c in ("benign_transfer", "bundled_transfer_approve", "bundled_transfer_set_owner", "bundled_transfer_close"):
+            self.assertIn(c, hit)
 
     def test_declared_asset_is_always_in_allowed_effects(self):
         for _, row in self.rows:
