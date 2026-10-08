@@ -923,3 +923,54 @@ async fn cross_checked_verify_where_both_agree_the_evidence_fails_is_not_verifie
     let m = not_verified(verify_line(&cc, &paths.records, &paths.proofs, 1, Some(&a)).await.unwrap());
     assert!(m.contains("root mismatch"), "{m}");
 }
+
+/// Corrupts (or fails) reads of one account only, on the finalized and confirmed paths.
+struct OneKey<C: Chain> {
+    inner: C,
+    key: Address,
+    fail: bool,
+}
+
+impl<C: Chain> OneKey<C> {
+    fn hit(&self, key: &Address, r: Result<Option<Vec<u8>>, ChainError>) -> Result<Option<Vec<u8>>, ChainError> {
+        if *key != self.key {
+            return r;
+        }
+        if self.fail {
+            return Err(ChainError::Unavailable("registry read failed".into()));
+        }
+        Ok(r?.map(|mut d| { if let Some(b) = d.last_mut() { *b ^= 1; } d }))
+    }
+}
+
+impl<C: Chain> Chain for OneKey<C> {
+    async fn account(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        self.hit(key, self.inner.account(key).await)
+    }
+    async fn account_confirmed(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        self.hit(key, self.inner.account_confirmed(key).await)
+    }
+    async fn send(&self, ixs: Vec<Instruction>, signer: &Keypair) -> Result<String, ChainError> {
+        self.inner.send(ixs, signer).await
+    }
+}
+
+#[tokio::test]
+async fn registry_account_tampered_on_one_rpc_could_not_check() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let reg = registry_pda(&kp.pubkey());
+    let cc = CrossCheckChain::new(Shared(&c), OneKey { inner: Shared(&c), key: reg, fail: false });
+    let e = verify_line(&cc, &paths.records, &paths.proofs, 6, None).await.expect_err("must not be VERIFIED");
+    assert!(e.to_string().contains("RPCs disagree"), "{e}");
+}
+
+#[tokio::test]
+async fn registry_read_error_on_one_rpc_could_not_check() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let reg = registry_pda(&kp.pubkey());
+    let cc = CrossCheckChain::new(Shared(&c), OneKey { inner: Shared(&c), key: reg, fail: true });
+    assert!(verify_line(&cc, &paths.records, &paths.proofs, 6, None).await.is_err());
+    // Also without cross-check: an unreadable registry is "could not check", not "authority unknown".
+    let solo = OneKey { inner: Shared(&c), key: reg, fail: true };
+    assert!(verify_line(&solo, &paths.records, &paths.proofs, 6, None).await.is_err());
+}

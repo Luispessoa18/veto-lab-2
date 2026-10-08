@@ -147,6 +147,20 @@ fn fatal(e: impl std::fmt::Display) -> ! {
     std::process::exit(2);
 }
 
+/// Any chain read that fails or is not trusted is an `Err` here, which `main` reports through `fatal` (exit 2).
+async fn check<C: aval_svm::chain::Chain>(chain: &C, records: &std::path::Path, proofs: &std::path::Path, line: u64, authority: Option<&Address>) -> anyhow::Result<Verdict> {
+    Ok(verify_line(chain, records, proofs, line, authority).await?)
+}
+
+/// Exit code for a finished check: 0 verified, 1 not verified, 2 pending or could not check.
+fn exit_code(r: &anyhow::Result<Verdict>) -> i32 {
+    match r {
+        Ok(Verdict::Verified { .. }) => 0,
+        Ok(Verdict::NotVerified(_)) => 1,
+        Ok(Verdict::Pending(_)) | Err(_) => 2,
+    }
+}
+
 async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: String, authority: Option<String>, cross_check: Option<String>) -> anyhow::Result<()> {
     let authority = authority.map(|a| Address::from_str(&a).map_err(|_| anyhow::anyhow!("--authority {a:?} is not a valid pubkey"))).transpose()?;
     let proofs = proofs.unwrap_or_else(|| Paths::for_records(&records).proofs);
@@ -154,9 +168,9 @@ async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: 
         Some(second) => {
             eprintln!("note: cross-checked against a second RPC");
             let chain = CrossCheckChain::new(rpc_chain(&upstream).finalized_reads(), rpc_chain(&second).finalized_reads());
-            verify_line(&chain, &records, &proofs, line, authority.as_ref()).await?
+            check(&chain, &records, &proofs, line, authority.as_ref()).await?
         }
-        None => verify_line(&rpc_chain(&upstream).finalized_reads(), &records, &proofs, line, authority.as_ref()).await?,
+        None => check(&rpc_chain(&upstream).finalized_reads(), &records, &proofs, line, authority.as_ref()).await?,
     };
     println!("{}", render(&verdict));
     match verdict {
@@ -166,8 +180,7 @@ async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: 
             }
             Ok(())
         }
-        Verdict::NotVerified(_) => std::process::exit(1),
-        Verdict::Pending(_) => std::process::exit(2),
+        Verdict::NotVerified(_) | Verdict::Pending(_) => std::process::exit(exit_code(&Ok(verdict))),
     }
 }
 
@@ -212,6 +225,31 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{anchored_message, Cli, Cmd, DEFAULT_UPSTREAM};
     use clap::Parser;
+
+    #[test]
+    fn cross_check_disagreement_maps_to_exit_2() {
+        use aval_svm::chain::{Chain, ChainError, CrossCheckChain};
+        use solana_address::Address;
+        use solana_instruction::Instruction;
+        use solana_keypair::Keypair;
+        struct Fake(Option<Vec<u8>>);
+        impl Chain for Fake {
+            async fn account(&self, _k: &Address) -> Result<Option<Vec<u8>>, ChainError> { Ok(self.0.clone()) }
+            async fn send(&self, _i: Vec<Instruction>, _s: &Keypair) -> Result<String, ChainError> { unreachable!() }
+        }
+        let d = tempfile::tempdir().unwrap();
+        let (rec, proofs) = (d.path().join("r.jsonl"), d.path().join("r.proofs.jsonl"));
+        std::fs::write(&rec, "x\n").unwrap();
+        std::fs::write(&proofs, "").unwrap();
+        // No proof entry: a plain NOT VERIFIED is exit 1; an Err (disagreement, failed read) is 2.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let chain = CrossCheckChain::new(Fake(None), Fake(Some(vec![1])));
+        let r = rt.block_on(super::check(&chain, &rec, &proofs, 0, None));
+        assert_eq!(super::exit_code(&r), 1);
+        assert_eq!(super::exit_code(&Err(anyhow::anyhow!("RPCs disagree on account x"))), 2);
+        let pending: anyhow::Result<aval_svm::verify::Verdict> = Ok(aval_svm::verify::Verdict::Pending("p".into()));
+        assert_eq!(super::exit_code(&pending), 2);
+    }
 
     #[test]
     fn anchored_message_ends_on_the_last_line_inclusive() {
