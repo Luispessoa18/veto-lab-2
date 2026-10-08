@@ -168,6 +168,75 @@ cd svm && cargo build --release && cd ..
 
 Desenho: `svm/docs/2026-10-06-aval-svm-design.md`.
 
+### Dataset de treino a partir do aval-svm
+
+Transações **reais** da mainnet viram exemplos de treino pareados para o modelo do VETO.
+O aval-svm amostra blocos finalizados recentes (sem votos, até 8 transações por bloco), simula
+cada uma de novo contra o estado atual e guarda só as que **executam com sucesso** e mexem em
+algum signatário além da taxa:
+
+```bash
+./svm/target/release/aval-svm dataset --upstream "$AVAL_UPSTREAM_URL" \
+    --target 1000 --out results/svm_effects.jsonl --delay-ms 300 --max-blocks 400
+```
+
+- Retomável: relê o arquivo, pula os `tx_digest` já salvos e continua acrescentando até o
+  `--target` (contando o que já existe). 429/erros de rede: espera e tenta de novo; nunca derruba
+  a execução. A URL do upstream não é impressa (só o host). `--with-tx` guarda também a transação.
+- Registros antigos sem `decimals` dos tokens: `aval-svm dataset --backfill-decimals --in results/svm_effects.jsonl
+  --out results/svm_effects.v2.jsonl --upstream <url>` lê cada mint uma vez e preenche os decimais (sem
+  re-simular; os demais campos ficam iguais).
+- RPC público (`https://api.mainnet-beta.solana.com`) funciona, mas limita `getBlock`; use
+  `--delay-ms 400` ou um RPC próprio.
+
+Efeitos de permissão (approve, set_authority, close) são raros numa amostra da mainnet; o
+`dataset-synth` monta essas transações localmente (SPL Token e Token-2022 embutidos no LiteSVM,
+estado em memória, sem rede) e as simula com o mesmo motor — approve limitado e ilimitado,
+troca de dono/closeAuthority, close com o rent indo para terceiros, transfer_checked para um
+estranho e variantes benignas. Mesmo esquema, com `"source": "synthetic"`:
+
+```bash
+./svm/target/release/aval-svm dataset-synth --count 300 --out results/svm_effects_synth.jsonl --seed 42
+```
+
+Depois, o lab deriva de cada efeito uma intenção **honesta** (ação, ativo, valor, destinatário,
+efeitos permitidos) e gera mutações rotuladas **por código** (comparando intenção × efeitos):
+`recipient_mismatch`, `amount_understated`, `asset_mismatch`, `undeclared_approval`,
+`undeclared_authority_change`, `undeclared_close`, `approval_exceeds_intent` (intenção declara
+um approve limitado, a simulação mostra um maior ou ilimitado) e `injected_instruction` (instrução para a IA
+escondida em memo/metadados, en e pt-BR). Cerca de 1 honesto : 1–2 mutados por transação,
+com teto por sinal; a divisão train/valid/test (80/10/10) é por `tx_digest`.
+
+```bash
+python -m src.svm_dataset --effects results/svm_effects.jsonl results/svm_effects_synth.jsonl \
+    --out results/svm_dataset --format risk --seed 42 --min-sol 0.001
+```
+
+- `--min-sol` (padrão 0.001) descarta transfer_sol menores que isso (spam/gorjetas); a contagem
+  vai para `stats.json`, que também separa tudo por origem (`mainnet` / `synthetic`).
+- Avaliação por origem: `test_mainnet.jsonl`, `test_synthetic.jsonl` e `test_by_source.jsonl`
+  (cada linha com `source`). Os casos sintéticos são mais fáceis; reporte os dois números.
+- O que as verificações automáticas garantem (testes + `stats.json`): nenhuma ação com risco alto
+  >85% ou <15% (`risk_by_action`/`warnings`, n ≥ 20); cada campo de metadados (e "sem metadados")
+  aparece com risco baixo e alto; o ativo declarado sempre consta em `allowed_effects`; fechar uma
+  conta não conta como troca de autoridade; mutações `undeclared_*` usam os casos "bundled" do
+  `dataset-synth` (a transferência declarada acontece de verdade) e, só na falta deles, a intenção
+  de uma transferência benigna do **mesmo** split; ~30% dos textos de injeção só aparecem no teste;
+  no máximo 8 registros por pagador de taxa. Isso reduz atalhos conhecidos, não prova que não há outros.
+- Questão em aberto (decisão do time): uma intenção honesta que declara uma ação perigosa (por
+  exemplo, approve ilimitado ou transferir a autoridade da conta) é rotulada risco **baixo**, porque
+  os efeitos batem com o pedido. Se o modelo deve sinalizar ações perigosas mesmo quando declaradas
+  ainda precisa ser decidido; os rótulos atuais não fazem isso.
+
+- Saída em chat JSONL (`messages` system/user/assistant), aceita por MLX-LM e Unsloth:
+  `results/svm_dataset/{train,valid,test}.jsonl` + `stats.json` (contagens por split, por sinal,
+  descartes).
+- `--format risk` (padrão): o assistente responde `{"risk","signals","reasons"}` — o LLM opina,
+  o código decide. `--format decision`: o formato atual do lab
+  (`decision`/`confidence`/`reasons`/`evidence_fields`).
+- Execução longa em segundo plano: `nohup ./svm/target/release/aval-svm dataset ... >> results/svm_dataset_run.log 2>&1 &`
+  e acompanhe com `tail -f results/svm_dataset_run.log` ou `wc -l results/svm_effects.jsonl`.
+
 ## aval-registry — atestação on-chain dos vereditos
 
 O `aval-svm anchor` lê o arquivo de registros do VETO (JSONL, um veredito por linha), agrupa as

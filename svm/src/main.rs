@@ -39,6 +39,44 @@ enum Cmd {
         #[arg(long, default_value_t = 150)]
         delay_ms: u64,
     },
+    /// Sample real transactions from recent finalized blocks, simulate them fresh and append the
+    /// effects of the successful ones (JSONL) for the lab's training-dataset builder. Resumable.
+    Dataset {
+        #[arg(long, env = "AVAL_UPSTREAM_URL")]
+        upstream: String,
+        /// Stop once the output file holds this many records.
+        #[arg(long, default_value_t = 1000)]
+        target: usize,
+        #[arg(long, default_value = "results/svm_effects.jsonl")]
+        out: PathBuf,
+        /// Pause between simulations, to stay under public-RPC rate limits.
+        #[arg(long, default_value_t = 300)]
+        delay_ms: u64,
+        /// Stop after this many blocks.
+        #[arg(long, default_value_t = 400)]
+        max_blocks: usize,
+        /// Transactions simulated per block, spread evenly over it (diversity across blocks).
+        #[arg(long, default_value_t = 8)]
+        per_block: usize,
+        /// Also store the base64 transaction in each record.
+        #[arg(long)]
+        with_tx: bool,
+        /// Instead of sampling: rewrite --in to --out with token decimals filled (no re-simulation).
+        #[arg(long, requires = "input")]
+        backfill_decimals: bool,
+        #[arg(long = "in")]
+        input: Option<PathBuf>,
+    },
+    /// Build token-permission transactions locally (approve, set_authority, close, transfer) and
+    /// simulate them over an in-memory state (no network). Same JSONL schema, source "synthetic".
+    DatasetSynth {
+        #[arg(long, default_value_t = 300)]
+        count: usize,
+        #[arg(long, default_value = "results/svm_effects_synth.jsonl")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
     /// Anchor Merkle roots of new record lines in the aval_registry program.
     Anchor {
         #[arg(long)]
@@ -181,6 +219,13 @@ async fn main() -> anyhow::Result<()> {
             anchor(records, keypair, upstream, interval_secs, max_batch, once).await.unwrap_or_else(|e| fatal(e))
         }
         Cmd::Verify { records, line, proofs, upstream, authority } => verify(records, line, proofs, upstream, authority).await.unwrap_or_else(|e| fatal(e)),
+        Cmd::Dataset { upstream, input: Some(input), backfill_decimals: true, out, delay_ms, .. } => {
+            aval_svm::dataset::backfill_decimals(&input, &out, &upstream, delay_ms).await?
+        }
+        Cmd::Dataset { upstream, target, out, delay_ms, max_blocks, per_block, with_tx, .. } => {
+            aval_svm::dataset::run(&aval_svm::dataset::Args { upstream, target, out, delay_ms, max_blocks, per_block, with_tx }).await?
+        }
+        Cmd::DatasetSynth { count, out, seed } => aval_svm::synth::run(count, &out, seed).await?,
         Cmd::Shadow { upstream, count, slot, out, delay_ms } => aval_svm::shadow::run(&upstream, count, slot, &out, delay_ms).await?,
         Cmd::Serve { config } => {
             let c = Config::load(Some(&config))?;
@@ -215,6 +260,41 @@ mod tests {
         a.extend_from_slice(args);
         match Cli::try_parse_from(a).unwrap().cmd {
             Cmd::Verify { upstream, .. } => upstream,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dataset_defaults_match_the_documented_command() {
+        match Cli::try_parse_from(["aval-svm", "dataset", "--upstream", "http://u"]).unwrap().cmd {
+            Cmd::Dataset { upstream, target, out, delay_ms, max_blocks, per_block, with_tx, .. } => {
+                assert_eq!(upstream, "http://u");
+                assert_eq!((target, delay_ms, max_blocks, per_block, with_tx), (1000, 300, 400, 8, false));
+                assert_eq!(out, std::path::PathBuf::from("results/svm_effects.jsonl"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn backfill_needs_an_input_file() {
+        assert!(Cli::try_parse_from(["aval-svm", "dataset", "--upstream", "http://u", "--backfill-decimals"]).is_err());
+        match Cli::try_parse_from(["aval-svm", "dataset", "--upstream", "http://u", "--backfill-decimals", "--in", "a.jsonl", "--out", "b.jsonl"]).unwrap().cmd {
+            Cmd::Dataset { backfill_decimals, input, out, .. } => {
+                assert!(backfill_decimals);
+                assert_eq!((input.unwrap(), out), (std::path::PathBuf::from("a.jsonl"), std::path::PathBuf::from("b.jsonl")));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dataset_synth_defaults() {
+        match Cli::try_parse_from(["aval-svm", "dataset-synth"]).unwrap().cmd {
+            Cmd::DatasetSynth { count, out, seed } => {
+                assert_eq!((count, seed), (300, 42));
+                assert_eq!(out, std::path::PathBuf::from("results/svm_effects_synth.jsonl"));
+            }
             _ => unreachable!(),
         }
     }
