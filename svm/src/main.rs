@@ -1,5 +1,5 @@
 use aval_svm::anchor_batcher::{escaped, give_up_on_chain_errors, read_keypair, BatchError, Batcher, Paths};
-use aval_svm::chain::{ChainError, RpcChain};
+use aval_svm::chain::{ChainError, CrossCheckChain, RpcChain};
 use aval_svm::verify::{render, verify_line, Verdict};
 use aval_svm::{cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
 use clap::{Parser, Subcommand};
@@ -70,6 +70,9 @@ enum Cmd {
         /// Registry authority pubkey; pins the registry instead of trusting the proofs file.
         #[arg(long)]
         authority: Option<String>,
+        /// Second, independent RPC: every account read must match on both, or verify exits 2.
+        #[arg(long, env = "AVAL_REGISTRY_RPC_2")]
+        cross_check: Option<String>,
     },
 }
 
@@ -144,11 +147,17 @@ fn fatal(e: impl std::fmt::Display) -> ! {
     std::process::exit(2);
 }
 
-async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: String, authority: Option<String>) -> anyhow::Result<()> {
+async fn verify(records: PathBuf, line: u64, proofs: Option<PathBuf>, upstream: String, authority: Option<String>, cross_check: Option<String>) -> anyhow::Result<()> {
     let authority = authority.map(|a| Address::from_str(&a).map_err(|_| anyhow::anyhow!("--authority {a:?} is not a valid pubkey"))).transpose()?;
     let proofs = proofs.unwrap_or_else(|| Paths::for_records(&records).proofs);
-    let chain = rpc_chain(&upstream).finalized_reads();
-    let verdict = verify_line(&chain, &records, &proofs, line, authority.as_ref()).await?;
+    let verdict = match cross_check {
+        Some(second) => {
+            eprintln!("note: cross-checked against a second RPC");
+            let chain = CrossCheckChain::new(rpc_chain(&upstream).finalized_reads(), rpc_chain(&second).finalized_reads());
+            verify_line(&chain, &records, &proofs, line, authority.as_ref()).await?
+        }
+        None => verify_line(&rpc_chain(&upstream).finalized_reads(), &records, &proofs, line, authority.as_ref()).await?,
+    };
     println!("{}", render(&verdict));
     match verdict {
         Verdict::Verified { registry, .. } => {
@@ -180,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Anchor { records, keypair, upstream, interval_secs, max_batch, once } => {
             anchor(records, keypair, upstream, interval_secs, max_batch, once).await.unwrap_or_else(|e| fatal(e))
         }
-        Cmd::Verify { records, line, proofs, upstream, authority } => verify(records, line, proofs, upstream, authority).await.unwrap_or_else(|e| fatal(e)),
+        Cmd::Verify { records, line, proofs, upstream, authority, cross_check } => verify(records, line, proofs, upstream, authority, cross_check).await.unwrap_or_else(|e| fatal(e)),
         Cmd::Shadow { upstream, count, slot, out, delay_ms } => aval_svm::shadow::run(&upstream, count, slot, &out, delay_ms).await?,
         Cmd::Serve { config } => {
             let c = Config::load(Some(&config))?;
@@ -217,6 +226,25 @@ mod tests {
             Cmd::Verify { upstream, .. } => upstream,
             _ => unreachable!(),
         }
+    }
+
+    fn verify_cross_check(args: &[&str]) -> Option<String> {
+        let mut a = vec!["aval-svm", "verify", "--records", "r.jsonl", "--line", "0"];
+        a.extend_from_slice(args);
+        match Cli::try_parse_from(a).unwrap().cmd {
+            Cmd::Verify { cross_check, .. } => cross_check,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn cross_check_rpc_comes_from_flag_then_env_and_is_off_by_default() {
+        std::env::remove_var("AVAL_REGISTRY_RPC_2");
+        assert_eq!(verify_cross_check(&[]), None);
+        std::env::set_var("AVAL_REGISTRY_RPC_2", "http://127.0.0.1:8998");
+        assert_eq!(verify_cross_check(&[]).as_deref(), Some("http://127.0.0.1:8998"));
+        assert_eq!(verify_cross_check(&["--cross-check", "http://y"]).as_deref(), Some("http://y"));
+        std::env::remove_var("AVAL_REGISTRY_RPC_2");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The anchor batcher end to end against the real compiled aval_registry program in LiteSVM.
 use aval_svm::anchor_batcher::*;
-use aval_svm::chain::{Chain, ChainError, LiteSvmChain};
+use aval_svm::chain::{Chain, ChainError, CrossCheckChain, LiteSvmChain};
 use aval_svm::merkle::{self, Step};
 use aval_svm::registry_client::*;
 use litesvm::LiteSVM;
@@ -866,5 +866,60 @@ async fn confirmed_batch_that_fails_the_checks_is_not_verified_rather_than_pendi
     rewrite_proofs(&paths, |ps| ps.into_iter().map(|mut p| { if p.line == 1 { p.batch = 1; } p }).collect());
     let lag = Lagging { inner: c, confirmed_sees: true };
     let m = not_verified(verify_line(&lag, &paths.records, &paths.proofs, 1, Some(&a)).await.unwrap());
+    assert!(m.contains("root mismatch"), "{m}");
+}
+
+/// Wraps a chain and flips a byte in every account it serves, as a lying RPC would.
+struct Tampered<C: Chain>(C);
+
+impl<C: Chain> Chain for Tampered<C> {
+    async fn account(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        Ok(self.0.account(key).await?.map(|mut d| { if let Some(b) = d.last_mut() { *b ^= 1; } d }))
+    }
+    async fn account_confirmed(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        Ok(self.0.account_confirmed(key).await?.map(|mut d| { if let Some(b) = d.last_mut() { *b ^= 1; } d }))
+    }
+    async fn send(&self, ixs: Vec<Instruction>, signer: &Keypair) -> Result<String, ChainError> {
+        self.0.send(ixs, signer).await
+    }
+}
+
+/// Shares one LiteSVM between two views, so "two RPCs" see identical state.
+struct Shared<'a>(&'a LiteSvmChain);
+
+impl Chain for Shared<'_> {
+    async fn account(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        self.0.account(key).await
+    }
+    async fn send(&self, ixs: Vec<Instruction>, signer: &Keypair) -> Result<String, ChainError> {
+        self.0.send(ixs, signer).await
+    }
+}
+
+#[tokio::test]
+async fn cross_checked_verify_passes_when_both_rpcs_agree() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let a = kp.pubkey();
+    let cc = CrossCheckChain::new(Shared(&c), Shared(&c));
+    let v = verify_line(&cc, &paths.records, &paths.proofs, 6, Some(&a)).await.unwrap();
+    assert!(matches!(v, Verdict::Verified { .. }), "{v:?}");
+}
+
+#[tokio::test]
+async fn cross_checked_verify_with_a_tampered_second_rpc_could_not_check() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let a = kp.pubkey();
+    let cc = CrossCheckChain::new(Shared(&c), Tampered(Shared(&c)));
+    let e = verify_line(&cc, &paths.records, &paths.proofs, 6, Some(&a)).await.expect_err("must not yield a verdict");
+    assert!(e.to_string().contains("RPCs disagree"), "{e}");
+}
+
+#[tokio::test]
+async fn cross_checked_verify_where_both_agree_the_evidence_fails_is_not_verified() {
+    let (_d, paths, c, kp) = anchored_two_batches().await;
+    let a = kp.pubkey();
+    rewrite_proofs(&paths, |ps| ps.into_iter().map(|mut p| { if p.line == 1 { p.batch = 1; } p }).collect());
+    let cc = CrossCheckChain::new(Shared(&c), Shared(&c));
+    let m = not_verified(verify_line(&cc, &paths.records, &paths.proofs, 1, Some(&a)).await.unwrap());
     assert!(m.contains("root mismatch"), "{m}");
 }
