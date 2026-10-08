@@ -104,6 +104,51 @@ A request may pass `"aval": {"fresh": true}` to bypass the cache for plain
 accounts (program entries still follow `program_ttl_ms`). Post-Oct-8,
 `accountSubscribe` keeps hot accounts live and the TTL becomes a fallback.
 
+**Cross-check (optional).** With `upstream_secondary_url` set, each fetch goes to both
+providers and is compared. A provider more than `quorum_max_slot_gap` slots behind is
+unavailable (error); equal data passes; differing data at different slots re-reads the
+lagging side, up to `quorum_refetch_attempts` times (default 3), each with `minContextSlot`
+= the other side's latest slot. Data still differing (or differing at equal slots) is a
+disagreement: `QuorumSource::get_multiple_with_dissent` returns the primary's accounts and the
+secondary's values as *dissent*, which the cache stores with the entry (and drops with it; a
+disputed program is not pinned). Accounts are cross-checked at fetch time and then served
+from the cache within the TTL.
+
+**Two worlds (hot accounts no longer fail closed).** The engine classifies each disputed key:
+- *strict* — signers (fee payer included), any account executable in either view, ProgramData,
+  SPL Token / Token-2022 token accounts whose owner or delegate is a signer (either view), and
+  address lookup tables (they decide which accounts load). Dissent here refuses with
+  `upstreams disagree on <key>` (`-32005`), as before.
+- *tolerated* — everything else (pools, oracles, third-party state, sysvars). The transaction is
+  simulated in world P (primary accounts) and world S (primary accounts with the disputed keys
+  set to the secondary's values). If either fails, that failure is the answer; if both succeed,
+  world P's outcome is returned and world S's is kept as the alternate. `aval` carries
+  `"worlds": 2, "divergent": <bool>`, and `/v1/project` adds `projectionAlternate`. With no
+  dissent the output is unchanged. Raw reads (`getMultipleAccounts` from the cache) still fail
+  closed on dissent.
+
+*Divergence* (`project::divergent`, over the two projections) reflects what matters to the
+user: the worlds diverge iff the error presence or kind differs; any authority/ownership change
+(owner, delegate, closeAuthority, programOwner) or the created/closed sets differ; or a
+signer's SOL delta, or the token delta of a token account a signer owns or is delegate of,
+differs by more than `divergence_tolerance_bps` (default 50, relative to the larger absolute
+delta; zero in one world and non-zero in the other always diverges). Third-party accounts
+(pools, oracles) moving differently is not divergence by itself.
+
+Plain RPC clients read only the standard fields, so a divergent pair of worlds answers
+`simulateTransaction` with `-32005` "simulated worlds diverge (upstreams disagree on <keys>)";
+a client that sends `"aval": {"worlds": true}` (the lab does) gets world P plus
+`aval.worlds/divergent` instead. `/v1/project` always returns both projections. The cluster
+Clock is clamped in the VM to read slot + `quorum_max_slot_gap` (so a far-future Clock cannot
+ratchet a worker's slot), and Clock dissent past that is strict (its epoch fields would be
+untrustworthy).
+
+Guarantee, assuming at least one honest provider: a lying provider can only make Aval
+stricter, never looser — plain clients fail closed on divergence and opt-in clients see both
+worlds — with one bound: a lying pool/oracle view can shift the user's result by up to
+`divergence_tolerance_bps` undetected. Requested `accounts` the transaction already loads are
+returned from world P.
+
 **Preloaded at boot.** System, SPL Token, Token-2022, Associated Token, Memo,
 Compute Budget, Stake, Address Lookup Table, and a configurable list
 (`preload_programs`, e.g. Jupiter v6, Orca Whirlpool, Raydium).

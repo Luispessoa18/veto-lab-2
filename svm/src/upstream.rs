@@ -6,6 +6,14 @@ use solana_address::Address;
 use std::str::FromStr;
 use std::time::Duration;
 
+/// `scheme://host[:port]` of a URL, for logs: path, query and credentials (API keys) are dropped.
+pub fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return "<url>".into() };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    format!("{scheme}://{host}")
+}
+
 #[derive(Clone)]
 pub struct Upstream {
     url: String,
@@ -45,11 +53,11 @@ impl Upstream {
             .json(body)
             .send()
             .await
-            .map_err(|e| SourceError::Unavailable(e.to_string()))?;
+            .map_err(|e| SourceError::Unavailable(e.without_url().to_string()))?;
         if !resp.status().is_success() {
             return Err(SourceError::Unavailable(format!("HTTP {}", resp.status())));
         }
-        resp.json().await.map_err(|e| SourceError::Unavailable(e.to_string()))
+        resp.json().await.map_err(|e| SourceError::Unavailable(e.without_url().to_string()))
     }
 
     /// One call; returns `result`, or `SourceError::Rpc(error)`.
@@ -62,11 +70,20 @@ impl Upstream {
     }
 }
 
-impl AccountSource for Upstream {
-    async fn get_multiple(&self, keys: &[Address]) -> Result<(u64, Vec<Option<Account>>), SourceError> {
+impl Upstream {
+    /// `getMultipleAccounts`; with `min_context_slot` the node must answer from at least that slot.
+    pub async fn get_multiple_at(
+        &self,
+        keys: &[Address],
+        min_context_slot: Option<u64>,
+    ) -> Result<(u64, Vec<Option<Account>>), SourceError> {
         let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        let mut config = json!({"encoding": "base64", "commitment": self.commitment});
+        if let Some(slot) = min_context_slot {
+            config["minContextSlot"] = json!(slot);
+        }
         let result = self
-            .call("getMultipleAccounts", json!([keys, {"encoding": "base64", "commitment": self.commitment}]))
+            .call("getMultipleAccounts", json!([keys, config]))
             .await
             .map_err(|e| SourceError::Unavailable(e.to_string()))?;
         let slot = result["context"]["slot"]
@@ -85,11 +102,24 @@ impl AccountSource for Upstream {
     }
 }
 
+impl AccountSource for Upstream {
+    async fn get_multiple(&self, keys: &[Address]) -> Result<(u64, Vec<Option<Account>>), SourceError> {
+        self.get_multiple_at(keys, None).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use wiremock::matchers::{body_partial_json, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn redact_url_keeps_only_scheme_and_host() {
+        assert_eq!(redact_url("https://mainnet.helius-rpc.com/?api-key=SECRET123"), "https://mainnet.helius-rpc.com");
+        assert_eq!(redact_url("http://user:SECRET123@127.0.0.1:8899/path?x=1#f"), "http://127.0.0.1:8899");
+        assert_eq!(redact_url("not a url SECRET123"), "<url>");
+    }
 
     #[tokio::test]
     async fn parses_get_multiple_accounts() {

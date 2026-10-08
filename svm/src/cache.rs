@@ -1,5 +1,5 @@
 use crate::gather::is_programdata;
-use crate::source::{AccountSource, SourceError};
+use crate::source::{AccountSource, Dissent, SourceError};
 use solana_account::Account;
 use solana_address::Address;
 use std::collections::{HashMap, HashSet};
@@ -20,6 +20,8 @@ pub struct Fetched {
     pub min_slot: u64,
     /// Oldest non-pinned slot seen; `None` until one is. Never defaulted to 0.
     plain_min: Option<u64>,
+    /// The secondary provider's differing values for some of `accounts` (see `QuorumSource`).
+    pub dissent: Dissent,
     pub hits: usize,
     pub misses: usize,
 }
@@ -29,6 +31,8 @@ struct Entry {
     slot: u64,
     at: Instant,
     pinned: bool,
+    /// The secondary's differing value, when the providers disagreed on this read.
+    dissent: Option<Option<Account>>,
 }
 
 pub struct Cache<S> {
@@ -48,6 +52,11 @@ impl Fetched {
     }
 
     pub fn merge(&mut self, other: Fetched) {
+        // A newer read of a key replaces its dissent too.
+        for k in other.accounts.keys() {
+            self.dissent.remove(k);
+        }
+        self.dissent.extend(other.dissent);
         self.accounts.extend(other.accounts);
         self.slot = self.slot.max(other.slot);
         self.plain_min = match (self.plain_min, other.plain_min) {
@@ -60,8 +69,9 @@ impl Fetched {
     }
 }
 
-fn pin(a: &Option<Account>) -> bool {
-    matches!(a, Some(a) if a.executable || is_programdata(a))
+/// Programs and ProgramData are kept for `program_ttl`, unless the providers disagree on them.
+fn pin(a: &Option<Account>, dissent: &Option<Option<Account>>) -> bool {
+    dissent.is_none() && matches!(a, Some(a) if a.executable || is_programdata(a))
 }
 
 impl<S: AccountSource> Cache<S> {
@@ -94,6 +104,9 @@ impl<S: AccountSource> Cache<S> {
                 match map.get(k) {
                     Some(e) if live(e) => {
                         out.accounts.insert(*k, e.account.clone());
+                        if let Some(d) = &e.dissent {
+                            out.dissent.insert(*k, d.clone());
+                        }
                         out.slot = out.slot.max(e.slot);
                         if !e.pinned { out.note_plain(e.slot); }
                         out.hits += 1;
@@ -106,14 +119,19 @@ impl<S: AccountSource> Cache<S> {
             out.settle();
             return Ok(out);
         }
-        let batches = missing.chunks(MAX_BATCH).map(|c| self.source.get_multiple(c));
+        let batches = missing.chunks(MAX_BATCH).map(|c| self.source.get_multiple_with_dissent(c));
         let results = futures::future::try_join_all(batches).await?;
         let now = Instant::now();
         let mut map = self.map.lock().unwrap();
-        for (chunk, (slot, accounts)) in missing.chunks(MAX_BATCH).zip(results) {
+        for (chunk, (slot, accounts, mut dissent)) in missing.chunks(MAX_BATCH).zip(results) {
             for (k, account) in chunk.iter().zip(accounts) {
-                map.insert(*k, Entry { pinned: pin(&account), account: account.clone(), slot, at: now });
-                if !pin(&account) { out.note_plain(slot); }
+                let d = dissent.remove(k);
+                let pinned = pin(&account, &d);
+                if !pinned { out.note_plain(slot); }
+                if let Some(d) = &d {
+                    out.dissent.insert(*k, d.clone());
+                }
+                map.insert(*k, Entry { pinned, account: account.clone(), slot, at: now, dissent: d });
                 out.accounts.insert(*k, account);
             }
             out.slot = out.slot.max(slot);
@@ -248,5 +266,51 @@ mod tests {
         let mut still_empty = Fetched::default();
         still_empty.merge(Fetched::default());
         assert_eq!(still_empty.min_slot, still_empty.slot);
+    }
+
+    #[tokio::test]
+    async fn dissent_is_carried_on_miss_and_hit_and_expires_with_the_entry() {
+        let src = MemSource::new(10);
+        src.insert(key(1), lamports(5));
+        src.set_dissent(key(1), Some(lamports(6)));
+        let cache = Cache::new(src, Duration::from_millis(50));
+        let miss = cache.get_many(&[key(1), key(2)], false).await.unwrap();
+        assert_eq!(miss.accounts[&key(1)].as_ref().unwrap().lamports, 5, "the primary's view is served");
+        assert_eq!(miss.dissent.len(), 1);
+        assert_eq!(miss.dissent[&key(1)].as_ref().unwrap().lamports, 6);
+        let hit = cache.get_many(&[key(1)], false).await.unwrap();
+        assert_eq!((hit.hits, hit.dissent[&key(1)].as_ref().unwrap().lamports), (1, 6));
+        // The providers now agree; once the entry expires the dissent is gone too.
+        cache.source().clear_dissent();
+        std::thread::sleep(Duration::from_millis(60));
+        let later = cache.get_many(&[key(1)], false).await.unwrap();
+        assert_eq!(later.misses, 1);
+        assert!(later.dissent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_disputed_program_is_not_pinned() {
+        let src = MemSource::new(10);
+        src.insert(key(2), Account { executable: true, ..lamports(1) });
+        src.set_dissent(key(2), None);
+        let cache = Cache::new(src, Duration::from_secs(60));
+        cache.get_many(&[key(2)], false).await.unwrap();
+        let again = cache.get_many(&[key(2)], true).await.unwrap();
+        assert_eq!(again.misses, 1, "fresh refetches a disputed program instead of keeping it for program_ttl");
+    }
+
+    #[tokio::test]
+    async fn merge_carries_dissent_and_a_refetch_replaces_it() {
+        let src = MemSource::new(10);
+        src.insert(key(1), lamports(5));
+        src.set_dissent(key(1), None);
+        let cache = Cache::new(src, Duration::from_secs(60));
+        let mut got = cache.get_many(&[key(1)], false).await.unwrap();
+        let mut other = cache.get_many(&[key(3)], false).await.unwrap();
+        other.merge(got.clone());
+        assert!(other.dissent.contains_key(&key(1)));
+        cache.source().clear_dissent();
+        got.merge(cache.get_many(&[key(1)], true).await.unwrap());
+        assert!(got.dissent.is_empty(), "the newer read of key(1) agrees");
     }
 }

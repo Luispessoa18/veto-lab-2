@@ -215,8 +215,10 @@ class VetoPipeline:
             timeout = (self.config.get("aval_svm_timeout_seconds", 12) if engine == "aval-svm"
                        else self.config.get("solana_timeout_seconds", 30))
             try:
+                # so o aval-svm pede os dois mundos (sem isso, mundos divergentes viram erro -32005)
+                sent = {**options, "aval": {"worlds": True}} if engine == "aval-svm" else dict(options)
                 response = requests.post(rpc_url, json={"jsonrpc": "2.0", "id": request_id,
-                                         "method": "simulateTransaction", "params": [serialized, options]},
+                                         "method": "simulateTransaction", "params": [serialized, sent]},
                                          timeout=timeout)
                 response.raise_for_status(); body = response.json()
                 if not isinstance(body, dict):
@@ -251,9 +253,13 @@ class VetoPipeline:
             return result("BLOCK", "solana_simulation", "SOLANA_SIMULATION_FAILED", cluster=cluster, engine=engine,
                           simulation_error=value.get("err"), logs=value.get("logs", []), latency_ms=latency,
                           aval=res.get("aval"))
-        return result("ALLOW", "solana_simulation", "SOLANA_SIMULATION_SUCCEEDED",
+        aval = res.get("aval")
+        # os dois provedores discordam em contas toleradas e os dois mundos simulados diferem
+        divergent = isinstance(aval, dict) and aval.get("divergent") is True
+        return result("REVIEW" if divergent else "ALLOW", "solana_simulation",
+                      "SOLANA_SIMULATION_DIVERGENT" if divergent else "SOLANA_SIMULATION_SUCCEEDED",
                       cluster=cluster, engine=engine, units_consumed=value.get("unitsConsumed"),
-                      logs=value.get("logs", []), latency_ms=latency, aval=res.get("aval"))
+                      logs=value.get("logs", []), latency_ms=latency, aval=aval)
 
     def verify_transaction(self, payload, request_id):
         trace = []

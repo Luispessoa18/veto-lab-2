@@ -164,6 +164,8 @@ SOL de devnet é dinheiro de teste: **não custa nada real**. O único obstácul
 - **Para testar contra a devnet:**
   1. Pegue ~0,1 SOL de devnet em https://faucet.solana.com (login com GitHub ajuda) para a sua carteira.
   2. Rode os mesmos comandos da seção 4 **sem** `AVAL_REGISTRY_RPC` (o padrão já é a devnet).
+  3. Opcional: confirme com um segundo RPC independente, `verify ... --cross-check <url>` (ou `AVAL_REGISTRY_RPC_2`).
+     Se os dois divergirem, o `verify` sai com 2 e não diz VERIFIED.
 - **Para quem publica** (~1,1 SOL de devnet):
 
   ```bash

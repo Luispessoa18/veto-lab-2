@@ -28,14 +28,20 @@ async fn project_route<S: AccountSource>(State(app): State<Arc<App<S>>>, Json(bo
     };
     let fresh = body.get("fresh").and_then(Value::as_bool).unwrap_or(false);
     match app.engine.simulate(decoded, fresh).await {
-        Ok(r) => Json(json!({
-            "ok": r.outcome.err.is_none(),
-            "err": r.outcome.err.as_ref().map(|e| serde_json::to_value(e).unwrap_or(json!(e.to_string()))),
-            "unitsConsumed": r.outcome.units,
-            "logs": r.outcome.logs,
-            "projection": project(&r.pre, &r.outcome.post),
-            "aval": aval_meta(&r),
-        })),
+        Ok(r) => {
+            let mut out = json!({
+                "ok": r.outcome.err.is_none(),
+                "err": r.outcome.err.as_ref().map(|e| serde_json::to_value(e).unwrap_or(json!(e.to_string()))),
+                "unitsConsumed": r.outcome.units,
+                "logs": r.outcome.logs,
+                "projection": project(&r.pre, &r.outcome.post),
+                "aval": aval_meta(&r),
+            });
+            if let Some(alt) = r.alternate.as_ref().filter(|_| r.worlds == 2) {
+                out["projectionAlternate"] = json!(project(&alt.pre, &alt.outcome.post));
+            }
+            Json(out)
+        }
         Err(e) => fail(e.code(), e.to_string()),
     }
 }

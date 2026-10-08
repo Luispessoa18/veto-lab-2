@@ -105,6 +105,32 @@ class AvalSvmTests(unittest.TestCase):
             self.pipe(aval_svm_timeout_seconds=3).simulate_solana(PAYLOAD, "r10")
         self.assertEqual(post.call_args.kwargs["timeout"], 3)
 
+    def test_divergent_worlds_turn_allow_into_review(self):
+        divergent = {"result": {**OK["result"], "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": True}}}
+        with patch("src.unified_api.requests.post", return_value=reply(divergent)) as post:
+            out = self.pipe().simulate_solana(PAYLOAD, "r11")
+        self.assertEqual((out["decision"], out["reason"], out["engine"]), ("REVIEW", "SOLANA_SIMULATION_DIVERGENT", "aval-svm"))
+        self.assertEqual(out["aval"]["worlds"], 2)
+        sent = post.call_args.kwargs["json"]["params"][1]
+        self.assertEqual(sent["aval"], {"worlds": True}, "opts in to the two-worlds reply")
+        same = {"result": {**OK["result"], "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": False}}}
+        with patch("src.unified_api.requests.post", return_value=reply(same)):
+            self.assertEqual(self.pipe().simulate_solana(PAYLOAD, "r12")["decision"], "ALLOW")
+        failed = {"result": {"value": {"err": {"InstructionError": [0, "x"]}, "logs": []},
+                             "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": True}}}
+        with patch("src.unified_api.requests.post", return_value=reply(failed)):
+            self.assertEqual(self.pipe().simulate_solana(PAYLOAD, "r13")["decision"], "BLOCK")
+
+    def test_only_aval_svm_gets_the_worlds_opt_in(self):
+        with patch("src.unified_api.requests.post",
+                   side_effect=[requests.ConnectionError("refused"), reply({"result": {"value": {"err": None}}})]) as post:
+            self.pipe().simulate_solana(PAYLOAD, "r14")
+        (aval_call, rpc_call) = post.call_args_list
+        self.assertEqual(aval_call.args[0], "http://127.0.0.1:8899")
+        self.assertEqual(aval_call.kwargs["json"]["params"][1]["aval"], {"worlds": True})
+        self.assertEqual(rpc_call.args[0], "https://public.devnet")
+        self.assertNotIn("aval", rpc_call.kwargs["json"]["params"][1])
+
     def test_everything_down_is_review(self):
         with patch("src.unified_api.requests.post", side_effect=requests.ConnectionError("down")):
             out = self.pipe().simulate_solana(PAYLOAD, "r4")

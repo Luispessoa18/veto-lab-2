@@ -16,6 +16,16 @@ pub struct Config {
     /// Extra program ids fetched and pinned at boot (e.g. Jupiter, Orca).
     pub preload_programs: Vec<String>,
     pub upstream_timeout_ms: u64,
+    /// Second RPC provider; when set, every account read is fetched from both and compared.
+    pub upstream_secondary_url: Option<String>,
+    /// Most slots the two providers' first reads may differ by; beyond it the lagging one is unhealthy.
+    pub quorum_max_slot_gap: u64,
+    /// Re-reads of the lagging provider, on a data mismatch at different slots, before the
+    /// two views count as a disagreement.
+    pub quorum_refetch_attempts: u32,
+    /// Two simulated worlds diverge when the signers' deltas differ by more than this
+    /// (basis points of the larger delta).
+    pub divergence_tolerance_bps: u64,
 }
 
 impl Default for Config {
@@ -30,6 +40,10 @@ impl Default for Config {
             recycle_after: 5000,
             preload_programs: Vec::new(),
             upstream_timeout_ms: 10_000,
+            upstream_secondary_url: None,
+            quorum_max_slot_gap: crate::engine::MAX_SLOT_GAP,
+            quorum_refetch_attempts: 3,
+            divergence_tolerance_bps: crate::engine::DIVERGENCE_TOLERANCE_BPS,
         }
     }
 }
@@ -46,6 +60,9 @@ impl Config {
         if let Ok(v) = std::env::var("AVAL_UPSTREAM_URL") {
             config.upstream_url = v;
         }
+        if let Ok(v) = std::env::var("AVAL_UPSTREAM_SECONDARY_URL") {
+            config.upstream_secondary_url = Some(v);
+        }
         Ok(config)
     }
 }
@@ -60,5 +77,13 @@ mod tests {
         assert_eq!(c.cache_ttl_ms, 500);
         assert_eq!(c.listen, "127.0.0.1:8899");
         assert_eq!(c.program_ttl_ms, 60_000);
+        assert_eq!((c.upstream_secondary_url, c.quorum_max_slot_gap, c.quorum_refetch_attempts), (None, 4, 3));
+        assert_eq!(c.divergence_tolerance_bps, 50);
+    }
+
+    #[test]
+    fn secondary_url_and_gap_come_from_toml() {
+        let c: Config = toml::from_str("upstream_secondary_url = \"http://b\"\nquorum_max_slot_gap = 9").unwrap();
+        assert_eq!((c.upstream_secondary_url.as_deref(), c.quorum_max_slot_gap), (Some("http://b"), 9));
     }
 }

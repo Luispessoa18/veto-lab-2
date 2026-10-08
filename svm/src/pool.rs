@@ -17,6 +17,9 @@ pub struct SimInput {
     pub tx: VersionedTransaction,
     pub accounts: Vec<(Address, Option<Account>)>,
     pub slot: u64,
+    /// Most slots the cluster Clock may run ahead of `slot` (the cross-checked read slot): a
+    /// far-future Clock must not ratchet this VM's slot for every later request.
+    pub max_clock_lead: u64,
 }
 
 #[derive(Debug)]
@@ -76,10 +79,11 @@ impl Fingerprint {
 /// Program/ProgramData accounts already set in a VM, by address.
 pub type Loaded = HashMap<Address, Fingerprint>;
 
-/// The cluster's Clock with a slot that never moves the VM backwards and is never behind
-/// the state the request was read at.
-pub fn cluster_clock(vm: &Clock, cluster: &Clock, input_slot: u64) -> Clock {
-    Clock { slot: vm.slot.max(cluster.slot).max(input_slot), ..cluster.clone() }
+/// The cluster's Clock with a slot that never moves the VM backwards, is never behind the
+/// state the request was read at, and is at most `max_lead` slots past it.
+pub fn cluster_clock(vm: &Clock, cluster: &Clock, input_slot: u64, max_lead: u64) -> Clock {
+    let cluster_slot = cluster.slot.min(input_slot.saturating_add(max_lead));
+    Clock { slot: vm.slot.max(cluster_slot).max(input_slot), ..cluster.clone() }
 }
 
 /// Deserializes a sysvar the source returned; `None` when absent, not sysvar-owned or garbled
@@ -111,7 +115,7 @@ fn is_cluster_sysvar(k: &Address) -> bool {
 pub fn run_in(svm: &mut LiteSVM, loaded: &mut Loaded, input: SimInput) -> Result<SimOutcome, SimError> {
     let current: Clock = svm.get_sysvar();
     let clock = match cluster_sysvar::<Clock>(&input.accounts, sysvar::clock::id()) {
-        Some(cluster) => cluster_clock(&current, &cluster, input.slot),
+        Some(cluster) => cluster_clock(&current, &cluster, input.slot, input.max_clock_lead),
         // No cluster Clock: keep the VM clock monotonic (programs set at slot S are only
         // visible from S) and use wall-clock time.
         None => Clock { slot: current.slot.max(input.slot), unix_timestamp: now_unix(), ..current },
@@ -268,7 +272,7 @@ mod tests {
         VersionedTransaction { signatures: vec![Default::default()], message: VersionedMessage::Legacy(msg) }
     }
     fn input(tx: VersionedTransaction, accounts: Vec<(Address, Option<Account>)>) -> SimInput {
-        SimInput { tx, accounts, slot: 1000 }
+        SimInput { tx, accounts, slot: 1000, max_clock_lead: 4 }
     }
 
     #[test]
@@ -394,10 +398,11 @@ mod tests {
     fn cluster_clock_keeps_cluster_fields_and_takes_the_highest_slot() {
         let vm = Clock { slot: 50, unix_timestamp: 1, epoch: 1, ..Clock::default() };
         let cluster = Clock { slot: 40, epoch_start_timestamp: 7, epoch: 9, leader_schedule_epoch: 10, unix_timestamp: 1_700_000_000 };
-        let c = cluster_clock(&vm, &cluster, 45);
+        let c = cluster_clock(&vm, &cluster, 45, 100);
         assert_eq!(c, Clock { slot: 50, ..cluster.clone() });
-        assert_eq!(cluster_clock(&vm, &cluster, 60).slot, 60);
-        assert_eq!(cluster_clock(&vm, &Clock { slot: 70, ..cluster.clone() }, 60).slot, 70);
+        assert_eq!(cluster_clock(&vm, &cluster, 60, 100).slot, 60);
+        assert_eq!(cluster_clock(&vm, &Clock { slot: 70, ..cluster.clone() }, 60, 100).slot, 70);
+        assert_eq!(cluster_clock(&vm, &Clock { slot: 70, ..cluster.clone() }, 60, 4).slot, 64, "clamped to input + lead");
     }
 
     #[test]
@@ -406,7 +411,7 @@ mod tests {
         let base = svm.get_sysvar::<Clock>().slot + 1000;
         let cluster = Clock { slot: base, epoch_start_timestamp: 1_699_000_000, epoch: 777, leader_schedule_epoch: 778, unix_timestamp: 1_700_000_000 };
         let schedule = solana_epoch_schedule::EpochSchedule::custom(8192, 8192, false);
-        let out = run_in(&mut svm, &mut loaded, SimInput { slot: base - 5, ..input(transfer(key(1), key(2), 1_000_000), vec![
+        let out = run_in(&mut svm, &mut loaded, SimInput { slot: base - 5, max_clock_lead: 5, ..input(transfer(key(1), key(2), 1_000_000), vec![
             (key(1), Some(wallet(10_000_000_000))), (key(2), None),
             (sysvar::clock::id(), sysvar_account(&cluster)),
             (sysvar::epoch_schedule::id(), sysvar_account(&schedule)),
@@ -477,7 +482,7 @@ mod tests {
         let run = |svm: &mut LiteSVM, loaded: &mut Loaded, elf: &[u8], deployed: u64| {
             let mut accounts = vec![(key(1), Some(wallet(10_000_000_000)))];
             accounts.extend(upgradeable(prog, pd, elf, deployed));
-            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot }).unwrap()
+            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot, max_clock_lead: 4 }).unwrap()
         };
         let v1 = run(&mut svm, &mut loaded, &memo, 1);
         assert!(v1.err.is_none(), "memo accepts utf-8: {:?}", v1.logs);
@@ -504,7 +509,7 @@ mod tests {
         let run = |svm: &mut LiteSVM, loaded: &mut Loaded, elf: &[u8], deployed: u64| {
             let mut accounts = vec![(key(1), Some(wallet(10_000_000_000)))];
             accounts.extend(upgradeable(prog, pd, elf, deployed));
-            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot })
+            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot, max_clock_lead: 4 })
         };
         let v1 = run(&mut svm, &mut loaded, &memo, 1).unwrap();
         assert!(v1.err.is_none(), "memo v1 must run: {:?}", v1.logs);
@@ -531,7 +536,7 @@ mod tests {
         let program_account = live[1].1.clone();
         let run = |svm: &mut LiteSVM, loaded: &mut Loaded, mut accounts: Vec<(Address, Option<Account>)>| {
             accounts.push((key(1), Some(wallet(10_000_000_000))));
-            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot })
+            run_in(svm, loaded, SimInput { tx: call(prog, key(1)), accounts, slot, max_clock_lead: 4 })
         };
         let v1 = run(&mut svm, &mut loaded, live).unwrap();
         assert!(v1.err.is_none(), "{:?}", v1.logs);
@@ -559,5 +564,22 @@ mod tests {
         let out = pool.run(input(transfer(key(1), key(2), 1_000_000),
             vec![(key(1), Some(wallet(10_000_000_000))), (key(2), None)])).await.unwrap();
         assert!(out.err.is_none());
+    }
+
+    #[test]
+    fn a_far_future_cluster_clock_cannot_ratchet_the_vm() {
+        let (mut svm, mut loaded) = (new_vm(), HashMap::new());
+        let base = svm.get_sysvar::<Clock>().slot + 1000;
+        let clock = |slot| sysvar_account(&Clock { slot, unix_timestamp: 1_700_000_000, ..Clock::default() });
+        let run = |svm: &mut LiteSVM, loaded: &mut Loaded, clock_slot: u64| {
+            run_in(svm, loaded, SimInput { slot: base, ..input(transfer(key(1), key(2), 1_000_000), vec![
+                (key(1), Some(wallet(10_000_000_000))), (key(2), None), (sysvar::clock::id(), clock(clock_slot)),
+            ]) }).unwrap()
+        };
+        let liar = run(&mut svm, &mut loaded, base + 1_000_000);
+        assert!(liar.clock.slot <= base + 4, "{}", liar.clock.slot);
+        let later = run(&mut svm, &mut loaded, base);
+        assert!(later.clock.slot <= base + 4, "a later request inherited {}", later.clock.slot);
+        assert!(svm.get_sysvar::<Clock>().slot <= base + 4);
     }
 }

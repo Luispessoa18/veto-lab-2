@@ -159,6 +159,39 @@ cd svm && cargo build --release && cd ..
   conta) sai do mesmo cache da simulação — em geral no mesmo slot dela, mas sem garantia; outras
   formas vão para o upstream.
 - Upstream: `AVAL_UPSTREAM_URL` (padrão devnet). Para mainnet use um RPC próprio (Helius etc.).
+- Verificação cruzada (opcional): com `upstream_secondary_url` (ou `AVAL_UPSTREAM_SECONDARY_URL`),
+  toda leitura de contas é feita nos dois provedores e comparada; um provedor mais de
+  `quorum_max_slot_gap` slots atrás é tratado como indisponível (`-32005`). Se os dados diferem em
+  slots diferentes, o lado atrasado é relido até `quorum_refetch_attempts` vezes (padrão 3) com
+  `minContextSlot`. As contas são conferidas no momento da busca e depois servidas do cache dentro
+  do TTL. A resposta traz `aval.upstreams: 2` quando ligada.
+- Contas quentes não falham mais fechado. Se a divergência persiste, a regra é:
+  - **estritas** (precisam bater; senão `-32005`): signatários (inclusive o pagador da taxa),
+    qualquer conta executável em uma das visões, ProgramData, contas de token SPL / Token-2022
+    cujo dono ou delegado é um signatário, e tabelas de lookup (decidem quais contas entram);
+  - **toleradas** (pools, oráculos, estado de terceiros, sysvars): a transação é simulada em dois
+    mundos — P (contas do primário) e S (as mesmas, com os valores do secundário nas contas
+    divergentes). Se um mundo falha, a resposta é a falha; se os dois passam, vale o mundo P.
+    `aval` ganha `"worlds": 2` e `"divergent"`; `/v1/project` ganha `projectionAlternate` (o
+    outro mundo). O laboratório transforma `divergent: true` + ALLOW em REVIEW
+    (`SOLANA_SIMULATION_DIVERGENT`).
+  - `divergent` olha o que importa ao usuário: é verdadeiro se um mundo falha e o outro não (ou o
+    tipo de erro muda); se qualquer mudança de autoridade/dono (owner, delegate, closeAuthority,
+    programOwner) ou o conjunto de contas criadas/fechadas difere; ou se o delta de SOL de um
+    signatário, ou o delta de token de uma conta de token de que um signatário é dono ou delegado,
+    difere mais que `divergence_tolerance_bps` (padrão 50, relativo ao maior delta; zero num mundo
+    e não-zero no outro sempre diverge). Pools e oráculos mudando diferente, sozinhos, não contam.
+  - `getMultipleAccounts` servido do cache continua falhando fechado (`-32005`) numa divergência.
+  - Clientes RPC comuns (que só leem os campos padrão) recebem `-32005` "simulated worlds diverge
+    (upstreams disagree on <contas>)" quando os mundos divergem; quem envia
+    `"aval": {"worlds": true}` (o laboratório envia) recebe o mundo P com `aval.worlds/divergent`.
+    `/v1/project` sempre traz as duas projeções.
+  - O `Clock` do cluster nunca passa de `slot lido + quorum_max_slot_gap` na VM, e uma divergência
+    no `Clock` além disso é estrita (as épocas não seriam confiáveis).
+  - Garantia, com ao menos um provedor honesto: um provedor mentiroso só deixa o Aval mais
+    estrito — exceto que uma visão falsa de pools/oráculos pode mover o resultado do usuário em
+    até `divergence_tolerance_bps` sem ser detectada. As contas pedidas em `accounts` que a
+    transação já carrega vêm do mundo P.
 - Medir contra o RPC: `aval-svm shadow --upstream <url> --count 200`.
 - Usa o `Clock` e o `EpochSchedule` do cluster, e verifica os precompiles ed25519/secp256k1.
   Transações maiores que 4096 bytes são recusadas (`-32602`).
@@ -238,6 +271,10 @@ VERIFIED line 11 — batch 1, slot 32, 2026-10-07T02:38:26Z, tx 22srm8…BKDYwce
 
 Os mesmos comandos funcionam na devnet com `AVAL_REGISTRY_RPC` sem definir (o padrão é a devnet);
 nesse caso é preciso ter SOL de devnet e fazer o deploy do programa lá.
+
+Para não depender de um único RPC, passe um segundo, independente, com `--cross-check <url>` (ou
+`AVAL_REGISTRY_RPC_2`) no `verify`: toda conta lida precisa ser idêntica nos dois. Se divergirem, ou um
+falhar, o `verify` sai com 2 ("não deu para checar"), nunca com 0 nem 1; só diz VERIFIED quando ambos concordam.
 
 ## Avaliação adversarial
 

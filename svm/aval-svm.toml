@@ -10,3 +10,9 @@ upstream_timeout_ms = 10000
 # Mainnet DeFi programs worth pinning at boot (only when upstream is mainnet):
 # preload_programs = ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"]
 preload_programs = []
+# Cross-check: a second RPC provider. When set, every account read used for simulation is
+# fetched from both providers and compared; a disagreement fails the request (fail closed).
+# Off by default. Env: AVAL_UPSTREAM_SECONDARY_URL (the URL may hold an API key: never log it).
+# upstream_secondary_url = "https://other-provider.example/rpc"
+# Slots the providers may differ by after the lagging one is refetched.
+# quorum_max_slot_gap = 4

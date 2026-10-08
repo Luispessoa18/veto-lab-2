@@ -127,6 +127,65 @@ async fn project_endpoint_returns_projection() {
     assert_eq!(out["ok"], true, "{out}");
     assert_eq!(out["projection"]["created"], json!([key(2).to_string()]));
     assert!(out["aval"]["elapsedUs"].is_u64());
+    assert!(out.get("projectionAlternate").is_none(), "{out}");
+    assert!(out["aval"].get("worlds").is_none() && out["aval"].get("divergent").is_none(), "{out}");
+}
+
+fn divergent_app() -> axum::Router {
+    let src = MemSource::new(900);
+    src.insert(key(1), Account { lamports: 10_000_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    src.insert(key(5), Account { lamports: 777, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    // The secondary sees key(2) already funded with 5_000_000.
+    src.set_dissent(key(2), Some(Account { lamports: 5_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() }));
+    let engine = Engine::new(Cache::new(src, Duration::from_secs(60)), Pool::new(1, 100));
+    router(Arc::new(App { engine, upstream: Upstream::new("http://127.0.0.1:9", "confirmed", 2000) }))
+}
+
+#[tokio::test]
+async fn divergent_worlds_carry_the_alternate_projection() {
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    let out = post(divergent_app(), "/v1/project", json!({"transaction": B64.encode(&raw)})).await;
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!((&out["aval"]["worlds"], &out["aval"]["divergent"]), (&json!(2), &json!(true)), "{out}");
+    assert_eq!(out["projection"]["created"], json!([key(2).to_string()]));
+    let alt = &out["projectionAlternate"];
+    assert_eq!(alt["created"], json!([]), "{out}");
+    assert!(alt["sol"].as_array().unwrap().iter().any(|d| d["account"] == key(2).to_string() && d["pre"] == 5_000_000 && d["post"] == 6_000_000), "{out}");
+}
+
+#[tokio::test]
+async fn divergent_worlds_fail_closed_for_plain_rpc_clients() {
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    let plain = post(divergent_app(), "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
+        "params": [B64.encode(&raw), {"encoding": "base64"}]})).await;
+    assert_eq!(plain["error"]["code"], -32005, "{plain}");
+    assert_eq!(plain["error"]["message"], format!("simulated worlds diverge (upstreams disagree on {})", key(2)), "{plain}");
+    let opted = post(divergent_app(), "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
+        "params": [B64.encode(&raw), {"encoding": "base64", "aval": {"worlds": true}}]})).await;
+    assert!(opted["result"]["value"]["err"].is_null(), "{opted}");
+    assert_eq!((&opted["result"]["aval"]["worlds"], &opted["result"]["aval"]["divergent"]), (&json!(2), &json!(true)), "{opted}");
+}
+
+#[tokio::test]
+async fn non_divergent_two_worlds_answer_plain_clients() {
+    // key(5) is not loaded by the transfer... so load it read-only: same result in both worlds.
+    let src = MemSource::new(900);
+    src.insert(key(1), Account { lamports: 10_000_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    src.insert(key(5), Account { lamports: 777, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    src.set_dissent(key(5), Some(Account { lamports: 778, owner: solana_sdk_ids::system_program::id(), ..Account::default() }));
+    let engine = Engine::new(Cache::new(src, Duration::from_secs(60)), Pool::new(1, 100));
+    let a = router(Arc::new(App { engine, upstream: Upstream::new("http://127.0.0.1:9", "confirmed", 2000) }));
+    let raw = common::transfer_with_readonly(key(1), key(2), 1_000_000, key(5));
+    let out = post(a, "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction", "params": [B64.encode(&raw), {"encoding": "base64"}]})).await;
+    assert!(out["result"]["value"]["err"].is_null(), "{out}");
+    assert_eq!((&out["result"]["aval"]["worlds"], &out["result"]["aval"]["divergent"]), (&json!(2), &json!(false)), "{out}");
+}
+
+#[tokio::test]
+async fn get_multiple_accounts_with_dissent_is_32005() {
+    let out = post(divergent_app(), "/", gma(vec![key(2).to_string()], json!({"encoding": "base64"}))).await;
+    assert_eq!(out["error"]["code"], -32005, "{out}");
+    assert!(out["error"]["message"].as_str().unwrap().contains("disagree"), "{out}");
 }
 
 #[tokio::test]
@@ -229,4 +288,40 @@ async fn get_multiple_accounts_with_no_keys_is_proxied() {
         .set_body_json(json!({"jsonrpc": "2.0", "id": 9, "result": {"context": {"slot": 1234}, "value": []}}))).mount(&server).await;
     let out = post(app(&server.uri()).await, "/", gma(vec![], json!({"encoding": "base64"}))).await;
     assert_eq!(out["result"]["context"]["slot"], 1234, "{out}");
+}
+
+/// A source that claims to be cross-checked against two providers.
+struct TwoUpstreams(MemSource);
+
+impl aval_svm::source::AccountSource for TwoUpstreams {
+    async fn get_multiple(&self, keys: &[solana_address::Address]) -> Result<(u64, Vec<Option<Account>>), aval_svm::source::SourceError> {
+        self.0.get_multiple(keys).await
+    }
+    fn upstreams(&self) -> usize { 2 }
+}
+
+#[tokio::test]
+async fn aval_meta_reports_upstreams_only_when_cross_checked() {
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction", "params": [B64.encode(&raw), {"encoding": "base64", "sigVerify": false}]});
+    let mem = MemSource::new(900);
+    mem.insert(key(1), Account { lamports: 10_000_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    let engine = Engine::new(Cache::new(TwoUpstreams(mem), Duration::from_secs(60)), Pool::new(1, 100));
+    let on = router(Arc::new(App { engine, upstream: Upstream::new("http://127.0.0.1:9", "confirmed", 2000) }));
+    let out = post(on, "/", body.clone()).await;
+    assert_eq!(out["result"]["aval"]["upstreams"], 2, "{out}");
+    assert!(out["result"]["aval"].get("worlds").is_none(), "agreeing providers: one world, {out}");
+    let off = post(app("http://127.0.0.1:9").await, "/", body).await;
+    assert!(off["result"]["aval"].get("upstreams").is_none(), "{off}");
+}
+
+#[tokio::test]
+async fn upstream_url_secret_never_reaches_the_error_message() {
+    use aval_svm::rpc::simulate_result;
+    let (_, raw) = transfer_tx(key(1), key(2), 1);
+    let up = Upstream::new("http://127.0.0.1:9/?api-key=SECRET123", "confirmed", 2000);
+    let engine = Engine::new(Cache::new(up, Duration::from_secs(60)), Pool::new(1, 100));
+    let e = simulate_result(&engine, &json!([B64.encode(&raw), {"encoding": "base64"}])).await.unwrap_err();
+    assert_eq!(e.code, -32005);
+    assert!(!e.message.contains("SECRET123"), "{}", e.message);
 }

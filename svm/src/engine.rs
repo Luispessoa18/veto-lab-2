@@ -1,20 +1,30 @@
 use crate::cache::{Cache, Fetched};
 use crate::decode::Decoded;
-use crate::gather::{first_pass, programdata_of, resolve_lookups, GatherError};
+use crate::gather::{first_pass, is_programdata, programdata_of, resolve_lookups, GatherError};
 use crate::pool::{Pool, SimError, SimInput, SimOutcome};
-use crate::source::{AccountSource, SourceError};
+use crate::project::{divergent, project, token_authorities, WorldView};
+use crate::source::{AccountSource, Dissent, SourceError};
 use solana_account::Account;
 use solana_address::Address;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// Sysvars fetched with every request and applied to the VM (see `pool::run_in`).
 pub const CLUSTER_SYSVARS: [Address; 3] =
     [solana_sdk_ids::sysvar::rent::ID, solana_sdk_ids::sysvar::clock::ID, solana_sdk_ids::sysvar::epoch_schedule::ID];
 
+/// One simulated view of the chain: its input state and its outcome.
+#[derive(Debug)]
+pub struct World {
+    pub outcome: SimOutcome,
+    pub pre: HashMap<Address, Option<Account>>,
+}
+
 #[derive(Debug)]
 pub struct SimReport {
+    /// The answer: world P's, or the failing world's when one of two fails.
     pub outcome: SimOutcome,
+    /// The input state of the world `outcome` came from.
     pub pre: HashMap<Address, Option<Account>>,
     pub slot: u64,
     /// Oldest slot among the non-pinned reads (see `Fetched::min_slot`).
@@ -23,6 +33,69 @@ pub struct SimReport {
     pub misses: usize,
     pub elapsed_us: u64,
     pub digest: String,
+    /// Providers each read was checked against (1 = no cross-check).
+    pub upstreams: usize,
+    /// 2 when the providers disagreed on tolerated accounts and both views were simulated.
+    pub worlds: usize,
+    /// The two worlds differ in what matters to the user (see `project::divergent`).
+    pub divergent: bool,
+    /// With two worlds: the one not reported in `outcome` (world S when both succeed).
+    pub alternate: Option<World>,
+    /// Keys the providers disagreed on (sorted; empty with one world).
+    pub disputed: Vec<Address>,
+}
+
+/// Dissent the providers must not have: signers (fee payer included), programs and
+/// ProgramData, and token accounts a signer owns or is delegate of — in either view.
+/// Lookup tables too: they decide which accounts the transaction loads at all.
+/// A disputed Clock whose slot (in either view) runs past `clock_limit` (read slot + gap) is
+/// strict too: its epoch fields cannot be trusted.
+fn strict_dissent(decoded: &Decoded, accounts: &HashMap<Address, Option<Account>>, dissent: &Dissent, clock_limit: u64) -> Option<Address> {
+    let msg = &decoded.tx.message;
+    let signers = signers_of(decoded);
+    let tables: HashSet<Address> = msg.address_table_lookups().unwrap_or(&[]).iter().map(|l| l.account_key).collect();
+    let strict_view = |a: &Option<Account>| match a {
+        Some(a) => a.executable || is_programdata(a) || token_authorities(a).is_some_and(|(owner, delegate)| {
+            signers.contains(&owner) || delegate.is_some_and(|d| signers.contains(&d))
+        }),
+        None => false,
+    };
+    let mut strict: Vec<Address> = dissent.iter()
+        .filter(|(k, theirs)| {
+            signers.contains(*k) || tables.contains(*k) || strict_view(theirs)
+                || (**k == solana_sdk_ids::sysvar::clock::ID
+                    && (clock_past(theirs, clock_limit) || accounts.get(*k).is_some_and(|a| clock_past(a, clock_limit))))
+                || accounts.get(*k).is_some_and(strict_view)
+        })
+        .map(|(k, _)| *k)
+        .collect();
+    strict.sort_by_key(|k| k.to_string());
+    strict.first().copied()
+}
+
+/// A Clock sysvar view whose slot is past `limit` (garbled or absent: no).
+fn clock_past(a: &Option<Account>, limit: u64) -> bool {
+    a.as_ref().and_then(|a| bincode::deserialize::<solana_clock::Clock>(&a.data).ok()).is_some_and(|c| c.slot > limit)
+}
+
+fn signers_of(decoded: &Decoded) -> HashSet<Address> {
+    let msg = &decoded.tx.message;
+    msg.static_account_keys().iter().take(msg.header().num_required_signatures as usize).copied().collect()
+}
+
+/// Divergence between two simulated worlds, over their projections (see `project::divergent`).
+fn diverges(p: &World, s: &World, signers: &HashSet<Address>, tolerance_bps: u64) -> bool {
+    // Token accounts the signers own or are delegate of, in any view before or after.
+    let user = |a: &Account| token_authorities(a).is_some_and(|(o, d)| signers.contains(&o) || d.is_some_and(|d| signers.contains(&d)));
+    let user_tokens: HashSet<String> = [p, s].iter()
+        .flat_map(|w| w.pre.iter().filter_map(|(k, a)| a.as_ref().map(|a| (k, a))).chain(w.outcome.post.iter()))
+        .filter(|(_, a)| user(a))
+        .map(|(k, _)| k.to_string())
+        .collect();
+    let names: HashSet<String> = signers.iter().map(|k| k.to_string()).collect();
+    let (pp, sp) = (project(&p.pre, &p.outcome.post), project(&s.pre, &s.outcome.post));
+    divergent(WorldView { err: p.outcome.err.as_ref(), projection: &pp },
+              WorldView { err: s.outcome.err.as_ref(), projection: &sp }, &names, &user_tokens, tolerance_bps)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,13 +134,32 @@ impl From<SimError> for EngineError {
     }
 }
 
+/// Default `divergence_tolerance_bps`.
+pub const DIVERGENCE_TOLERANCE_BPS: u64 = 50;
+/// Default `quorum_max_slot_gap`.
+pub const MAX_SLOT_GAP: u64 = 4;
+
 pub struct Engine<S> {
     cache: Cache<S>,
     pool: Pool,
+    tolerance_bps: u64,
+    max_slot_gap: u64,
 }
 
 impl<S: AccountSource> Engine<S> {
-    pub fn new(cache: Cache<S>, pool: Pool) -> Self { Engine { cache, pool } }
+    pub fn new(cache: Cache<S>, pool: Pool) -> Self { Engine { cache, pool, tolerance_bps: DIVERGENCE_TOLERANCE_BPS, max_slot_gap: MAX_SLOT_GAP } }
+
+    /// How far (in bps of the larger delta) the user's deltas may differ between two worlds.
+    pub fn with_divergence_tolerance_bps(mut self, bps: u64) -> Self {
+        self.tolerance_bps = bps;
+        self
+    }
+
+    /// How far the cluster Clock may run ahead of the read slot (the quorum's slot gap).
+    pub fn with_max_slot_gap(mut self, gap: u64) -> Self {
+        self.max_slot_gap = gap;
+        self
+    }
 
     pub fn cache(&self) -> &Cache<S> { &self.cache }
 
@@ -100,22 +192,52 @@ impl<S: AccountSource> Engine<S> {
 
     pub async fn simulate(&self, decoded: Decoded, fresh: bool) -> Result<SimReport, EngineError> {
         let started = Instant::now();
-        let got = self.gather(&decoded, fresh).await?;
-        let input = SimInput {
-            tx: decoded.tx,
-            accounts: got.accounts.iter().map(|(k, a)| (*k, a.clone())).collect(),
-            slot: got.slot,
+        let mut got = self.gather(&decoded, fresh).await?;
+        if let Some(k) = strict_dissent(&decoded, &got.accounts, &got.dissent, got.slot.saturating_add(self.max_slot_gap)) {
+            return Err(EngineError::Upstream(format!("upstreams disagree on {k}")));
+        }
+        let signers = signers_of(&decoded);
+        let mut disputed: Vec<Address> = got.dissent.keys().copied().collect();
+        disputed.sort_by_key(|k| k.to_string());
+        let slot = got.slot;
+        let input = |tx, accounts: &HashMap<Address, Option<Account>>| SimInput {
+            tx,
+            accounts: accounts.iter().map(|(k, a)| (*k, a.clone())).collect(),
+            slot,
+            max_clock_lead: self.max_slot_gap,
         };
-        let outcome = self.pool.run(input).await?;
+        let (outcome, pre, worlds, divergent, alternate) = if got.dissent.is_empty() {
+            let outcome = self.pool.run(input(decoded.tx, &got.accounts)).await?;
+            (outcome, std::mem::take(&mut got.accounts), 1, false, None)
+        } else {
+            // Tolerated dissent (pools, oracles, sysvars): simulate the primary's view (P) and
+            // the primary's view with the secondary's values (S); report the stricter.
+            let mut theirs = got.accounts.clone();
+            theirs.extend(got.dissent.iter().map(|(k, a)| (*k, a.clone())));
+            let (p, s) = tokio::join!(
+                self.pool.run(input(decoded.tx.clone(), &got.accounts)),
+                self.pool.run(input(decoded.tx, &theirs)),
+            );
+            let p = World { outcome: p?, pre: std::mem::take(&mut got.accounts) };
+            let s = World { outcome: s?, pre: theirs };
+            let divergent = diverges(&p, &s, &signers, self.tolerance_bps);
+            let (shown, other) = if p.outcome.err.is_none() && s.outcome.err.is_some() { (s, p) } else { (p, s) };
+            (shown.outcome, shown.pre, 2, divergent, Some(other))
+        };
         Ok(SimReport {
             outcome,
-            pre: got.accounts,
+            pre,
             slot: got.slot,
             min_slot: got.min_slot,
             hits: got.hits,
             misses: got.misses,
             elapsed_us: started.elapsed().as_micros() as u64,
             digest: decoded.digest,
+            upstreams: self.cache.source().upstreams(),
+            worlds,
+            divergent,
+            alternate,
+            disputed,
         })
     }
 }
