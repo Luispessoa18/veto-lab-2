@@ -245,6 +245,10 @@ VERIFIED line 11 — batch 1, slot 32, 2026-10-07T02:38:26Z, tx 22srm8…BKDYwce
 Os mesmos comandos funcionam na devnet com `AVAL_REGISTRY_RPC` sem definir (o padrão é a devnet);
 nesse caso é preciso ter SOL de devnet e fazer o deploy do programa lá.
 
+Para não depender de um único RPC, passe um segundo, independente, com `--cross-check <url>` (ou
+`AVAL_REGISTRY_RPC_2`) no `verify`: toda conta lida precisa ser idêntica nos dois. Se divergirem, ou um
+falhar, o `verify` sai com 2 ("não deu para checar"), nunca com 0 nem 1; só diz VERIFIED quando ambos concordam.
+
 ## Avaliação adversarial
 
 `03_GERAR_CASOS.bat` cria 600 casos-base e aproximadamente 20% de equivalentes

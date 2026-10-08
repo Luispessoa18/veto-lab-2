@@ -193,6 +193,47 @@ impl Chain for RpcChain {
     }
 }
 
+// ---------------------------------------------------------------- cross-check
+
+/// Reads every account from two independent chains and only answers when they agree,
+/// so a single lying or compromised RPC cannot decide a verdict. Read-only: never sends.
+pub struct CrossCheckChain<A: Chain, B: Chain> {
+    a: A,
+    b: B,
+}
+
+impl<A: Chain, B: Chain> CrossCheckChain<A, B> {
+    pub fn new(a: A, b: B) -> Self {
+        CrossCheckChain { a, b }
+    }
+}
+
+fn agree(key: &Address, x: Result<Option<Vec<u8>>, ChainError>, y: Result<Option<Vec<u8>>, ChainError>) -> Result<Option<Vec<u8>>, ChainError> {
+    let side = |name: &str, e: ChainError| ChainError::Unavailable(format!("{name} RPC failed: {}", crate::anchor_batcher::escaped(&e.to_string())));
+    match (x, y) {
+        (Ok(x), Ok(y)) if x == y => Ok(x),
+        (Ok(_), Ok(_)) => Err(ChainError::Unavailable(format!("RPCs disagree on account {key}"))),
+        (Err(e), _) => Err(side("first", e)),
+        (_, Err(e)) => Err(side("second", e)),
+    }
+}
+
+impl<A: Chain, B: Chain> Chain for CrossCheckChain<A, B> {
+    async fn account(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        let (x, y) = futures::join!(self.a.account(key), self.b.account(key));
+        agree(key, x, y)
+    }
+
+    async fn account_confirmed(&self, key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+        let (x, y) = futures::join!(self.a.account_confirmed(key), self.b.account_confirmed(key));
+        agree(key, x, y)
+    }
+
+    async fn send(&self, _ixs: Vec<Instruction>, _signer: &Keypair) -> Result<String, ChainError> {
+        Err(ChainError::Unavailable("cross-check chain cannot send".into()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +423,89 @@ mod tests {
         assert!(matches!(chain.account(&Address::from([1; 32])).await, Err(ChainError::Unavailable(_))));
         let kp = Keypair::new();
         assert!(matches!(chain.send(ix_for(&kp), &kp).await, Err(ChainError::Unavailable(_))));
+    }
+
+    // ------------------------------------------------ CrossCheckChain
+
+    /// Fake chain with a fixed answer per read kind.
+    struct Fixed {
+        finalized: Result<Option<Vec<u8>>, ChainError>,
+        confirmed: Result<Option<Vec<u8>>, ChainError>,
+    }
+
+    impl Fixed {
+        fn same(r: Result<Option<Vec<u8>>, ChainError>) -> Self {
+            Fixed { finalized: r.clone(), confirmed: r }
+        }
+    }
+
+    impl Chain for Fixed {
+        async fn account(&self, _key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+            self.finalized.clone()
+        }
+        async fn account_confirmed(&self, _key: &Address) -> Result<Option<Vec<u8>>, ChainError> {
+            self.confirmed.clone()
+        }
+        async fn send(&self, _ixs: Vec<Instruction>, _signer: &Keypair) -> Result<String, ChainError> {
+            Ok("sent".into())
+        }
+    }
+
+    fn cc(a: Option<Vec<u8>>, b: Option<Vec<u8>>) -> CrossCheckChain<Fixed, Fixed> {
+        CrossCheckChain::new(Fixed::same(Ok(a)), Fixed::same(Ok(b)))
+    }
+
+    fn unavailable(r: Result<Option<Vec<u8>>, ChainError>) -> String {
+        match r {
+            Err(ChainError::Unavailable(m)) => m,
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_check_agreeing_reads_pass_through() {
+        let k = Address::from([1; 32]);
+        assert_eq!(cc(Some(vec![1, 2]), Some(vec![1, 2])).account(&k).await.unwrap(), Some(vec![1, 2]));
+        assert_eq!(cc(Some(vec![1, 2]), Some(vec![1, 2])).account_confirmed(&k).await.unwrap(), Some(vec![1, 2]));
+        assert_eq!(cc(None, None).account(&k).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn cross_check_differing_data_or_presence_is_unavailable() {
+        let k = Address::from([1; 32]);
+        for (a, b) in [(Some(vec![1]), Some(vec![2])), (Some(vec![1]), None), (None, Some(vec![1]))] {
+            let m = unavailable(cc(a.clone(), b.clone()).account(&k).await);
+            assert!(m.contains("RPCs disagree on account") && m.contains(&k.to_string()), "{m}");
+            let m = unavailable(cc(a, b).account_confirmed(&k).await);
+            assert!(m.contains("RPCs disagree on account"), "{m}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_check_confirmed_reads_use_each_sides_confirmed_read() {
+        let k = Address::from([1; 32]);
+        let a = Fixed { finalized: Ok(None), confirmed: Ok(Some(vec![1])) };
+        let b = Fixed { finalized: Ok(None), confirmed: Ok(Some(vec![2])) };
+        let c = CrossCheckChain::new(a, b);
+        assert_eq!(c.account(&k).await.unwrap(), None);
+        assert!(unavailable(c.account_confirmed(&k).await).contains("disagree"));
+    }
+
+    #[tokio::test]
+    async fn cross_check_one_side_error_is_an_error_naming_the_side_without_a_url() {
+        let k = Address::from([1; 32]);
+        let bad = || Fixed::same(Err(ChainError::Unavailable("boom\nhttps://secret.example/?key=abc".into())));
+        let ok = || Fixed::same(Ok(Some(vec![1])));
+        let m = unavailable(CrossCheckChain::new(bad(), ok()).account(&k).await);
+        assert!(m.contains("first") && !m.contains('\n'), "{m}");
+        let m = unavailable(CrossCheckChain::new(ok(), bad()).account_confirmed(&k).await);
+        assert!(m.contains("second") && !m.contains('\n'), "{m}");
+    }
+
+    #[tokio::test]
+    async fn cross_check_never_sends() {
+        let kp = Keypair::new();
+        let r = cc(None, None).send(ix_for(&kp), &kp).await;
+        assert!(matches!(r, Err(ChainError::Unavailable(ref m)) if m == "cross-check chain cannot send"), "{r:?}");
     }
 }

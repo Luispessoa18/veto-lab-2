@@ -111,7 +111,9 @@ pub async fn registry_authority<C: Chain>(chain: &C, registry: &Address) -> Resu
 }
 
 /// Checks line `line` of `records` against the chain. `authority`, when given, pins the registry
-/// (otherwise the registry named by the proofs file is used). `Err` only for I/O or an unreachable chain.
+/// (otherwise the registry named by the proofs file is used). `Err` for I/O or any chain read that fails or
+/// is not trusted (including the registry account read), never a verdict. The authority is `None` only when the
+/// registry account is genuinely missing or not a Registry.
 pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, line: u64, authority: Option<&Address>) -> Result<Verdict, BatchError> {
     let no = |m: String| Ok(Verdict::NotVerified(m));
     let Some(entry) = proof_entry(proofs, line)? else {
@@ -178,7 +180,7 @@ pub async fn verify_line<C: Chain>(chain: &C, records: &Path, proofs: &Path, lin
         // Every check passed against the confirmed account; only finality is missing.
         return Ok(Verdict::Pending(format!("batch {} is confirmed but not finalized yet — retry in ~15 s", entry.batch)));
     }
-    let authority = registry_authority(chain, &registry).await.ok().flatten();
+    let authority = registry_authority(chain, &registry).await?;
     Ok(Verdict::Verified { line, batch: entry.batch, slot: batch.slot, unix_timestamp: batch.unix_timestamp, tx: entry.tx, registry, authority })
 }
 
