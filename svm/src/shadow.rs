@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const VOTE_PROGRAM: &str = "Vote111111111111111111111111111111111111111";
+pub const VOTE_PROGRAM: &str = "Vote111111111111111111111111111111111111111";
 
 /// Replaces the numbers in `Program <id> consumed <X> of <Y> compute units` so that
 /// compute-unit drift between program versions is not a disagreement; other lines stay exact.

@@ -54,6 +54,11 @@ fn token_view(a: &Account) -> Option<TokenView> {
     })
 }
 
+/// Mint and owner of an initialized SPL token account, as strings.
+pub fn token_mint_owner(a: &Account) -> Option<(String, String)> {
+    token_view(a).map(|t| (t.mint.to_string(), t.owner.to_string()))
+}
+
 /// Mint layout: decimals at byte 44.
 fn decimals_of(mint: &Address, pre: &HashMap<Address, Option<Account>>) -> Option<u8> {
     let m = pre.get(mint)?.as_ref()?;
@@ -129,6 +134,13 @@ mod tests {
         assert_eq!(p.tokens, vec![TokenDelta { account: acct.to_string(), mint: mint.to_string(), owner: owner.to_string(), pre: "5000000".into(), post: "0".into(), decimals: None }]);
         assert_eq!(p.authority, vec![AuthorityChange { account: acct.to_string(), field: "delegate".into(), pre: None, post: Some(thief.to_string()) }]);
         assert!(p.sol.is_empty());
+    }
+
+    #[test]
+    fn token_mint_owner_reads_token_accounts_only() {
+        let (mint, owner) = (key(2), key(3));
+        assert_eq!(token_mint_owner(&token_account(mint, owner, 1, None)), Some((mint.to_string(), owner.to_string())));
+        assert_eq!(token_mint_owner(&Account { lamports: 1, ..Account::default() }), None);
     }
 
     #[test]

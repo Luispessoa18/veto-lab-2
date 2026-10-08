@@ -39,6 +39,29 @@ enum Cmd {
         #[arg(long, default_value_t = 150)]
         delay_ms: u64,
     },
+    /// Sample real transactions from recent finalized blocks, simulate them fresh and append the
+    /// effects of the successful ones (JSONL) for the lab's training-dataset builder. Resumable.
+    Dataset {
+        #[arg(long, env = "AVAL_UPSTREAM_URL")]
+        upstream: String,
+        /// Stop once the output file holds this many records.
+        #[arg(long, default_value_t = 1000)]
+        target: usize,
+        #[arg(long, default_value = "results/svm_effects.jsonl")]
+        out: PathBuf,
+        /// Pause between simulations, to stay under public-RPC rate limits.
+        #[arg(long, default_value_t = 300)]
+        delay_ms: u64,
+        /// Stop after this many blocks.
+        #[arg(long, default_value_t = 400)]
+        max_blocks: usize,
+        /// Transactions simulated per block, spread evenly over it (diversity across blocks).
+        #[arg(long, default_value_t = 8)]
+        per_block: usize,
+        /// Also store the base64 transaction in each record.
+        #[arg(long)]
+        with_tx: bool,
+    },
     /// Anchor Merkle roots of new record lines in the aval_registry program.
     Anchor {
         #[arg(long)]
@@ -181,6 +204,9 @@ async fn main() -> anyhow::Result<()> {
             anchor(records, keypair, upstream, interval_secs, max_batch, once).await.unwrap_or_else(|e| fatal(e))
         }
         Cmd::Verify { records, line, proofs, upstream, authority } => verify(records, line, proofs, upstream, authority).await.unwrap_or_else(|e| fatal(e)),
+        Cmd::Dataset { upstream, target, out, delay_ms, max_blocks, per_block, with_tx } => {
+            aval_svm::dataset::run(&aval_svm::dataset::Args { upstream, target, out, delay_ms, max_blocks, per_block, with_tx }).await?
+        }
         Cmd::Shadow { upstream, count, slot, out, delay_ms } => aval_svm::shadow::run(&upstream, count, slot, &out, delay_ms).await?,
         Cmd::Serve { config } => {
             let c = Config::load(Some(&config))?;
@@ -215,6 +241,18 @@ mod tests {
         a.extend_from_slice(args);
         match Cli::try_parse_from(a).unwrap().cmd {
             Cmd::Verify { upstream, .. } => upstream,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dataset_defaults_match_the_documented_command() {
+        match Cli::try_parse_from(["aval-svm", "dataset", "--upstream", "http://u"]).unwrap().cmd {
+            Cmd::Dataset { upstream, target, out, delay_ms, max_blocks, per_block, with_tx } => {
+                assert_eq!(upstream, "http://u");
+                assert_eq!((target, delay_ms, max_blocks, per_block, with_tx), (1000, 300, 400, 8, false));
+                assert_eq!(out, std::path::PathBuf::from("results/svm_effects.jsonl"));
+            }
             _ => unreachable!(),
         }
     }
