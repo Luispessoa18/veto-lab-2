@@ -123,9 +123,17 @@ from the cache within the TTL.
   simulated in world P (primary accounts) and world S (primary accounts with the disputed keys
   set to the secondary's values). If either fails, that failure is the answer; if both succeed,
   world P's outcome is returned and world S's is kept as the alternate. `aval` carries
-  `"worlds": 2, "divergent": <bool>` (divergent = error presence or a written account's
-  post-state differs), and `/v1/project` adds `projectionAlternate`. With no dissent the output
-  is unchanged. Raw reads (`getMultipleAccounts` from the cache) still fail closed on dissent.
+  `"worlds": 2, "divergent": <bool>`, and `/v1/project` adds `projectionAlternate`. With no
+  dissent the output is unchanged. Raw reads (`getMultipleAccounts` from the cache) still fail
+  closed on dissent.
+
+*Divergence* (`project::divergent`, over the two projections) reflects what matters to the
+user: the worlds diverge iff the error presence or kind differs; any authority/ownership change
+(owner, delegate, closeAuthority, programOwner) or the created/closed sets differ; or a
+signer's SOL delta, or the token delta of a token account a signer owns or is delegate of,
+differs by more than `divergence_tolerance_bps` (default 50, relative to the larger absolute
+delta; zero in one world and non-zero in the other always diverges). Third-party accounts
+(pools, oracles) moving differently is not divergence by itself.
 
 A lying provider can only make Aval stricter, never looser — assuming at least one honest
 provider: the stricter of the two worlds is reported, and dissent on what the signer controls

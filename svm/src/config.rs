@@ -23,6 +23,9 @@ pub struct Config {
     /// Re-reads of the lagging provider, on a data mismatch at different slots, before the
     /// two views count as a disagreement.
     pub quorum_refetch_attempts: u32,
+    /// Two simulated worlds diverge when the signers' deltas differ by more than this
+    /// (basis points of the larger delta).
+    pub divergence_tolerance_bps: u64,
 }
 
 impl Default for Config {
@@ -40,6 +43,7 @@ impl Default for Config {
             upstream_secondary_url: None,
             quorum_max_slot_gap: 4,
             quorum_refetch_attempts: 3,
+            divergence_tolerance_bps: crate::engine::DIVERGENCE_TOLERANCE_BPS,
         }
     }
 }
@@ -74,6 +78,7 @@ mod tests {
         assert_eq!(c.listen, "127.0.0.1:8899");
         assert_eq!(c.program_ttl_ms, 60_000);
         assert_eq!((c.upstream_secondary_url, c.quorum_max_slot_gap, c.quorum_refetch_attempts), (None, 4, 3));
+        assert_eq!(c.divergence_tolerance_bps, 50);
     }
 
     #[test]

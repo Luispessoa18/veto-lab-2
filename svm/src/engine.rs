@@ -2,7 +2,7 @@ use crate::cache::{Cache, Fetched};
 use crate::decode::Decoded;
 use crate::gather::{first_pass, is_programdata, programdata_of, resolve_lookups, GatherError};
 use crate::pool::{Pool, SimError, SimInput, SimOutcome};
-use crate::project::token_authorities;
+use crate::project::{divergent, project, token_authorities, WorldView};
 use crate::source::{AccountSource, Dissent, SourceError};
 use solana_account::Account;
 use solana_address::Address;
@@ -37,7 +37,7 @@ pub struct SimReport {
     pub upstreams: usize,
     /// 2 when the providers disagreed on tolerated accounts and both views were simulated.
     pub worlds: usize,
-    /// The two worlds' results differ (error presence, or a written account's post-state).
+    /// The two worlds differ in what matters to the user (see `project::divergent`).
     pub divergent: bool,
     /// With two worlds: the one not reported in `outcome` (world S when both succeed).
     pub alternate: Option<World>,
@@ -48,8 +48,7 @@ pub struct SimReport {
 /// Lookup tables too: they decide which accounts the transaction loads at all.
 fn strict_dissent(decoded: &Decoded, accounts: &HashMap<Address, Option<Account>>, dissent: &Dissent) -> Option<Address> {
     let msg = &decoded.tx.message;
-    let signers: HashSet<Address> =
-        msg.static_account_keys().iter().take(msg.header().num_required_signatures as usize).copied().collect();
+    let signers = signers_of(decoded);
     let tables: HashSet<Address> = msg.address_table_lookups().unwrap_or(&[]).iter().map(|l| l.account_key).collect();
     let strict_view = |a: &Option<Account>| match a {
         Some(a) => a.executable || is_programdata(a) || token_authorities(a).is_some_and(|(owner, delegate)| {
@@ -68,16 +67,24 @@ fn strict_dissent(decoded: &Decoded, accounts: &HashMap<Address, Option<Account>
     strict.first().copied()
 }
 
-fn same_account(a: &Account, b: &Account) -> bool {
-    a.lamports == b.lamports && a.owner == b.owner && a.executable == b.executable && a.data == b.data
+fn signers_of(decoded: &Decoded) -> HashSet<Address> {
+    let msg = &decoded.tx.message;
+    msg.static_account_keys().iter().take(msg.header().num_required_signatures as usize).copied().collect()
 }
 
-/// The two worlds' results differ: one failed and the other did not, or an account written in
-/// one has a different (or no) post-state in the other.
-fn diverges(p: &SimOutcome, s: &SimOutcome) -> bool {
-    p.err.is_some() != s.err.is_some()
-        || p.post.len() != s.post.len()
-        || p.post.iter().any(|(k, a)| s.post.get(k).is_none_or(|b| !same_account(a, b)))
+/// Divergence between two simulated worlds, over their projections (see `project::divergent`).
+fn diverges(p: &World, s: &World, signers: &HashSet<Address>, tolerance_bps: u64) -> bool {
+    // Token accounts the signers own or are delegate of, in any view before or after.
+    let user = |a: &Account| token_authorities(a).is_some_and(|(o, d)| signers.contains(&o) || d.is_some_and(|d| signers.contains(&d)));
+    let user_tokens: HashSet<String> = [p, s].iter()
+        .flat_map(|w| w.pre.iter().filter_map(|(k, a)| a.as_ref().map(|a| (k, a))).chain(w.outcome.post.iter()))
+        .filter(|(_, a)| user(a))
+        .map(|(k, _)| k.to_string())
+        .collect();
+    let names: HashSet<String> = signers.iter().map(|k| k.to_string()).collect();
+    let (pp, sp) = (project(&p.pre, &p.outcome.post), project(&s.pre, &s.outcome.post));
+    divergent(WorldView { err: p.outcome.err.as_ref(), projection: &pp },
+              WorldView { err: s.outcome.err.as_ref(), projection: &sp }, &names, &user_tokens, tolerance_bps)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,13 +123,23 @@ impl From<SimError> for EngineError {
     }
 }
 
+/// Default `divergence_tolerance_bps`.
+pub const DIVERGENCE_TOLERANCE_BPS: u64 = 50;
+
 pub struct Engine<S> {
     cache: Cache<S>,
     pool: Pool,
+    tolerance_bps: u64,
 }
 
 impl<S: AccountSource> Engine<S> {
-    pub fn new(cache: Cache<S>, pool: Pool) -> Self { Engine { cache, pool } }
+    pub fn new(cache: Cache<S>, pool: Pool) -> Self { Engine { cache, pool, tolerance_bps: DIVERGENCE_TOLERANCE_BPS } }
+
+    /// How far (in bps of the larger delta) the user's deltas may differ between two worlds.
+    pub fn with_divergence_tolerance_bps(mut self, bps: u64) -> Self {
+        self.tolerance_bps = bps;
+        self
+    }
 
     pub fn cache(&self) -> &Cache<S> { &self.cache }
 
@@ -159,6 +176,7 @@ impl<S: AccountSource> Engine<S> {
         if let Some(k) = strict_dissent(&decoded, &got.accounts, &got.dissent) {
             return Err(EngineError::Upstream(format!("upstreams disagree on {k}")));
         }
+        let signers = signers_of(&decoded);
         let slot = got.slot;
         let input = |tx, accounts: &HashMap<Address, Option<Account>>| SimInput {
             tx,
@@ -179,7 +197,7 @@ impl<S: AccountSource> Engine<S> {
             );
             let p = World { outcome: p?, pre: std::mem::take(&mut got.accounts) };
             let s = World { outcome: s?, pre: theirs };
-            let divergent = diverges(&p.outcome, &s.outcome);
+            let divergent = diverges(&p, &s, &signers, self.tolerance_bps);
             let (shown, other) = if p.outcome.err.is_none() && s.outcome.err.is_some() { (s, p) } else { (p, s) };
             (shown.outcome, shown.pre, 2, divergent, Some(other))
         };

@@ -223,3 +223,16 @@ async fn dissent_on_a_lookup_table_refuses() {
     let err = sim(&e, &v0_transfer_via_table()).await.unwrap_err();
     assert!(err.to_string().contains(&format!("upstreams disagree on {}", key(9))), "{err}");
 }
+
+#[tokio::test]
+async fn a_third_party_account_differing_is_not_divergent() {
+    // key(2) exists in both worlds (5_000_000 vs 6_000_000): post-states differ, but nothing the
+    // signer cares about does (its SOL delta and the created/closed sets are the same).
+    let e = engine();
+    e.cache().source().insert(key(2), wallet(5_000_000));
+    e.cache().source().set_dissent(key(2), Some(wallet(6_000_000)));
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    let r = sim(&e, &raw).await.unwrap();
+    assert!(r.outcome.err.is_none(), "{:?}", r.outcome.logs);
+    assert_eq!((r.worlds, r.divergent), (2, false));
+}

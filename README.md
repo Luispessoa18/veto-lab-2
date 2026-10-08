@@ -172,9 +172,15 @@ cd svm && cargo build --release && cd ..
   - **toleradas** (pools, oráculos, estado de terceiros, sysvars): a transação é simulada em dois
     mundos — P (contas do primário) e S (as mesmas, com os valores do secundário nas contas
     divergentes). Se um mundo falha, a resposta é a falha; se os dois passam, vale o mundo P.
-    `aval` ganha `"worlds": 2` e `"divergent"` (resultados diferentes: erro ou estado final de
-    uma conta gravada); `/v1/project` ganha `projectionAlternate` (o outro mundo). O laboratório
-    transforma `divergent: true` + ALLOW em REVIEW (`SOLANA_SIMULATION_DIVERGENT`).
+    `aval` ganha `"worlds": 2` e `"divergent"`; `/v1/project` ganha `projectionAlternate` (o
+    outro mundo). O laboratório transforma `divergent: true` + ALLOW em REVIEW
+    (`SOLANA_SIMULATION_DIVERGENT`).
+  - `divergent` olha o que importa ao usuário: é verdadeiro se um mundo falha e o outro não (ou o
+    tipo de erro muda); se qualquer mudança de autoridade/dono (owner, delegate, closeAuthority,
+    programOwner) ou o conjunto de contas criadas/fechadas difere; ou se o delta de SOL de um
+    signatário, ou o delta de token de uma conta de token de que um signatário é dono ou delegado,
+    difere mais que `divergence_tolerance_bps` (padrão 50, relativo ao maior delta; zero num mundo
+    e não-zero no outro sempre diverge). Pools e oráculos mudando diferente, sozinhos, não contam.
   - `getMultipleAccounts` servido do cache continua falhando fechado (`-32005`) numa divergência.
   - Um provedor mentiroso só consegue deixar o Aval mais estrito, nunca mais frouxo — supondo que
     ao menos um provedor seja honesto.
