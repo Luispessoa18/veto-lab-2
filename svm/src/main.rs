@@ -2,6 +2,7 @@ use aval_svm::anchor_batcher::{escaped, give_up_on_chain_errors, read_keypair, B
 use aval_svm::chain::{ChainError, RpcChain};
 use aval_svm::verify::{render, verify_line, Verdict};
 use aval_svm::source::AccountSource;
+use aval_svm::upstream::redact_url;
 use aval_svm::{quorum::QuorumSource, cache::Cache, config::Config, engine::Engine, http::{router, App}, pool::Pool, upstream::Upstream};
 use clap::{Parser, Subcommand};
 use solana_address::Address;
@@ -112,7 +113,7 @@ async fn anchor(records: PathBuf, keypair: PathBuf, upstream: String, interval_s
         }
     }
     errors = 0;
-    eprintln!("anchoring {} into registry {} via {upstream}", records.display(), b.registry());
+    eprintln!("anchoring {} into registry {} via {}", records.display(), b.registry(), redact_url(&upstream));
     loop {
         match b.anchor_pending().await {
             Ok(Some(a)) => {
@@ -198,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!("preload failed, programs load on first use: {e}");
             }
             let listener = tokio::net::TcpListener::bind(&c.listen).await?;
-            println!("aval-svm on http://{} → upstream {} (pool {}, ttl {} ms)", c.listen, c.upstream_url, c.pool_size, c.cache_ttl_ms);
+            println!("aval-svm on http://{} → upstream {} (pool {}, ttl {} ms)", c.listen, redact_url(&c.upstream_url), c.pool_size, c.cache_ttl_ms);
             // Never print the secondary URL: it can carry an API key.
             println!("cross-check: {}", if engine.cache().source().upstreams() == 2 { "on (2 upstreams)" } else { "off" });
             axum::serve(listener, router(Arc::new(App { engine, upstream }))).await?;
