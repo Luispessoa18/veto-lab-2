@@ -1,6 +1,8 @@
 import json
 import random
+import re
 import unittest
+from collections import Counter
 
 from src import svm_dataset as sd
 
@@ -16,6 +18,11 @@ def rec(digest="d1", sol=(), tokens=(), authority=(), closed=(), created=(), tok
             "units": 1000, "fee": FEE, "token_accounts": token_accounts or {},
             "projection": {"sol": list(sol), "tokens": list(tokens), "authority": list(authority),
                            "closed": list(closed), "created": list(created)}}
+
+
+def rekey(r, i):
+    """Same record with its own fee payer (the builder caps records per payer)."""
+    return json.loads(json.dumps(r).replace(A, "A" * 40 + "%03d" % i + "1"))
 
 
 def sol(account, pre, post):
@@ -131,24 +138,52 @@ class MutationTests(unittest.TestCase):
         for kind in ("undeclared_approval", "undeclared_authority_change", "undeclared_close"):
             self.assertIsNone(sd.mutate(kind, honest, TOKEN_TRANSFER, random.Random(1)))
 
-    def test_injected_instruction_keeps_the_honest_intent(self):
+    def test_injected_instruction_keeps_the_honest_intent_and_the_field(self):
         for seed in range(20):
             honest = sd.derive_intent(TOKEN_TRANSFER)
-            intent, metadata = sd.mutate("injected_instruction", honest, TOKEN_TRANSFER, random.Random(seed))
+            field = sd.METADATA_FIELDS[seed % len(sd.METADATA_FIELDS)]
+            tx_meta = {field: sd.BENIGN_TEXT[field][0]}
+            intent, metadata = sd.mutate("injected_instruction", honest, TOKEN_TRANSFER, random.Random(seed), metadata=tx_meta)
             self.assertEqual(intent, honest)
+            self.assertEqual(list(metadata), [field])
+            self.assertNotEqual(metadata[field], tx_meta[field])
             self.assertEqual(sd.label(intent, TOKEN_TRANSFER, metadata)[0], ["injected_instruction"])
+        # No field to hide an instruction in: not applicable.
+        self.assertIsNone(sd.mutate("injected_instruction", sd.derive_intent(TOKEN_TRANSFER), TOKEN_TRANSFER, random.Random(1), metadata={}))
+
+    def test_injection_templates_are_varied_and_all_detected(self):
+        self.assertGreaterEqual(len(sd.INJECTIONS), 30)
         self.assertTrue(any("ALLOW" in t and "decision" in t for t in sd.INJECTIONS))
         self.assertTrue(any("autorize" in t or "aprove" in t for t in sd.INJECTIONS))
+        self.assertTrue(any("answer field" in t or "campo de resposta" in t for t in sd.INJECTIONS))
+        self.assertTrue(any(re.search(r"[A-Za-z0-9+/]{16,}={1,2}", t) for t in sd.INJECTIONS))
+        self.assertTrue(any(t.lower().startswith(("please", "por favor")) for t in sd.INJECTIONS))
+        reserved = set(sd.TEST_ONLY_INJECTIONS)
+        self.assertTrue(0.25 <= len(reserved) / len(sd.INJECTIONS) <= 0.35)
+        self.assertTrue(reserved <= set(sd.INJECTIONS))
+        for t in sd.INJECTIONS:
+            self.assertEqual(sd.label(sd.derive_intent(SWAP), SWAP, {"memo": t})[0], ["injected_instruction"], t)
 
-    def test_benign_memos_are_not_injections(self):
-        for memo in sd.BENIGN_MEMOS:
-            self.assertEqual(sd.label(sd.derive_intent(SWAP), SWAP, {"memo": memo})[0], [])
+    def test_benign_texts_are_not_injections(self):
+        for field, texts in sd.BENIGN_TEXT.items():
+            for t in texts:
+                self.assertEqual(sd.label(sd.derive_intent(SWAP), SWAP, {field: t})[0], [], (field, t))
+        self.assertEqual(set(sd.BENIGN_TEXT), set(sd.METADATA_FIELDS))
 
 
 class OutputTests(unittest.TestCase):
     def records(self, n=60):
         base = [SOL_TRANSFER, TOKEN_TRANSFER, SWAP, APPROVE, SWAP_PLUS]
-        return [dict(base[i % len(base)], tx_digest=f"tx{i:03d}") for i in range(n)]
+        return [rekey(dict(base[i % len(base)], tx_digest=f"tx{i:03d}"), i) for i in range(n)]
+
+    def test_records_per_fee_payer_are_capped(self):
+        same_payer = [dict(SOL_TRANSFER, tx_digest=f"p{i}") for i in range(12)]
+        _, stats = sd.build(same_payer, "risk", seed=1)
+        self.assertEqual(stats["used_records"], sd.MAX_RECORDS_PER_PAYER)
+        self.assertEqual(stats["skipped"]["payer_cap"], 12 - sd.MAX_RECORDS_PER_PAYER)
+        self.assertEqual(stats["payers_capped"], 1)
+        kept = {r["tx_digest"] for v in sd.build(same_payer, "risk", seed=1)[0].values() for r in v}
+        self.assertEqual(kept, {r["tx_digest"] for v in sd.build(list(reversed(same_payer)), "risk", seed=1)[0].values() for r in v})
 
     def test_split_never_shares_a_tx(self):
         splits, stats = sd.build(self.records(), "risk", seed=42)
@@ -231,8 +266,32 @@ SET_OWNER = synth("so", sol=[sol(A, 10_000_000, 10_000_000 - FEE)],
 CLOSE_STRANGER = synth("cs", sol=[sol(A, 10_000_000, 10_000_000 - FEE), sol("X" * 44, RENT, 0), sol(C, 0, RENT)],
                        closed=["X" * 44], created=[C], token_accounts={"X" * 44: {"mint": USDC, "owner": A}})
 CLOSE_BACK = synth("cb", sol=[sol(A, 10_000_000, 10_000_000 + RENT - FEE), sol("X" * 44, RENT, 0)],
-                   closed=["X" * 44], token_accounts={"X" * 44: {"mint": USDC, "owner": A}})
+                   closed=["X" * 44], token_accounts={"X" * 44: {"mint": USDC, "owner": A}},
+                   authority=[{"account": "X" * 44, "field": "programOwner", "pre": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                               "post": "11111111111111111111111111111111"}])
+APPROVE_DECIMALS = synth("ad", sol=[sol(A, 10_000_000, 10_000_000 - FEE)],
+                         authority=[{"account": "X" * 44, "field": "delegate", "pre": None, "post": C}],
+                         token_accounts={"X" * 44: {"mint": USDC, "owner": A, "delegated_amount": "2500000", "decimals": 6}})
 
+
+# A real transfer plus a permission change in the same transaction (dataset-synth bundled cases).
+def bundled(digest, case, **extra):
+    r = synth(digest, sol=[sol(A, 10_000_000, 10_000_000 - FEE)] + extra.pop("sol", []),
+              tokens=[tok("X" * 44, USDC, A, 9_000_000, 4_000_000), tok("Y" * 44, USDC, B, 0, 5_000_000)], **extra)
+    r["case"] = case
+    return r
+
+
+BUNDLED_APPROVE = bundled("ba", "bundled_transfer_approve",
+                          authority=[{"account": "X" * 44, "field": "delegate", "pre": None, "post": C}],
+                          token_accounts={"X" * 44: {"mint": USDC, "owner": A, "delegated_amount": UNLIMITED, "decimals": 6}})
+BUNDLED_SET_OWNER = bundled("bs", "bundled_transfer_set_owner",
+                            authority=[{"account": "X" * 44, "field": "owner", "pre": A, "post": C}],
+                            token_accounts={"X" * 44: {"mint": USDC, "owner": A, "decimals": 6}})
+BUNDLED_CLOSE = bundled("bc", "bundled_transfer_close", sol=[sol("X" * 44, RENT, 0), sol(C, 0, RENT)],
+                        closed=["X" * 44], created=[C],
+                        authority=[{"account": "X" * 44, "field": "programOwner", "pre": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "post": "11111111111111111111111111111111"}],
+                        token_accounts={"X" * 44: {"mint": USDC, "owner": A, "decimals": 6}})
 
 TWIN = dict(TOKEN_TRANSFER, tx_digest="twin", source="synthetic", case="benign_transfer")
 TWINS = [("twin", sd.derive_intent(TWIN))]
@@ -349,8 +408,8 @@ class ShortcutTests(unittest.TestCase):
     def mix():
         base = [SOL_TRANSFER, TOKEN_TRANSFER, SWAP, APPROVE_BOUNDED, APPROVE_UNLIMITED, SET_OWNER, CLOSE_STRANGER,
                 CLOSE_BACK, TWIN, rec("fee", sol=[sol(A, 10_000, 10_000 - FEE)]),
-                rec("in", tokens=[tok("Z" * 44, MINT, A, 0, 5)])]
-        return [dict(base[i % len(base)], tx_digest=f"m{i:03d}") for i in range(220)]
+                rec("in", tokens=[tok("Z" * 44, MINT, A, 0, 5)]), BUNDLED_APPROVE, BUNDLED_SET_OWNER, BUNDLED_CLOSE]
+        return [rekey(dict(base[i % len(base)], tx_digest=f"m{i:03d}"), i) for i in range(len(base) * 20)]
 
     def test_no_action_has_a_degenerate_risk_ratio(self):
         _, stats = sd.build(self.mix(), "risk", seed=11)
@@ -384,6 +443,101 @@ class ShortcutTests(unittest.TestCase):
             self.assertEqual([t["messages"] for t in tagged], [t["messages"] for t in test])
             stats = json.loads((out / "stats.json").read_text())
             self.assertEqual(stats["splits"]["test"]["by_source"]["mainnet"], len(mainnet))
+
+
+class ReviewTests(unittest.TestCase):
+    """Whole-dataset properties from the branch review."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.splits, cls.stats = sd.build(ShortcutTests.mix(), "risk", seed=11)
+        cls.rows = [(name, r) for name, v in cls.splits.items() for r in v]
+
+    @staticmethod
+    def parts(row):
+        user = json.loads(row["example"]["messages"][1]["content"])
+        answer = json.loads(row["example"]["messages"][2]["content"])
+        return user["intent"], user["metadata"], answer
+
+    def test_closing_a_token_account_is_not_an_authority_change(self):
+        i = sd.derive_intent(CLOSE_BACK)
+        self.assertFalse(any(e.startswith("authority_change:") for e in i["allowed_effects"]))
+        self.assertIsNone(sd.mutate("undeclared_authority_change", i, CLOSE_BACK, random.Random(1), twins=TWINS))
+        for _, row in self.rows:
+            _, _, answer = self.parts(row)
+            if "undeclared_authority_change" in answer["signals"]:
+                self.assertNotIn("programOwner", answer["reasons"][0])
+
+    def test_approve_amounts_are_in_decimal_units(self):
+        i = sd.derive_intent(APPROVE_DECIMALS)
+        self.assertEqual((i["amount"], i["decimals"]), ("2.5", 6))
+        m, meta = sd.mutate("approval_exceeds_intent", i, APPROVE_DECIMALS, random.Random(2))
+        signals, reasons = sd.label(m, APPROVE_DECIMALS, meta)
+        self.assertEqual(signals, ["approval_exceeds_intent"])
+        self.assertIn("2.5", reasons[0])
+
+    def test_asset_mismatch_rewrites_the_declared_outflow(self):
+        i = sd.derive_intent(TOKEN_TRANSFER)
+        m, _ = sd.mutate("asset_mismatch", i, TOKEN_TRANSFER, random.Random(4))
+        self.assertNotIn("token_out:" + USDC, m["allowed_effects"])
+        want = "sol_out" if m["asset"] == "SOL" else "token_out:" + m["asset"]
+        self.assertIn(want, m["allowed_effects"])
+        self.assertEqual(m["decimals"], sd.KNOWN_DECIMALS[m["asset"]])
+
+    def test_declared_asset_is_always_in_allowed_effects(self):
+        for _, row in self.rows:
+            intent, _, _ = self.parts(row)
+            if intent["action"] in ("transfer_sol", "transfer_token", "swap"):
+                want = "sol_out" if intent["asset"] == "SOL" else "token_out:" + intent["asset"]
+                self.assertIn(want, intent["allowed_effects"], intent)
+
+    def test_metadata_is_per_transaction_and_on_both_label_sides(self):
+        by_tx = {}
+        for _, row in self.rows:
+            _, meta, _ = self.parts(row)
+            by_tx.setdefault(row["tx_digest"], set()).add(tuple(sorted(meta)))
+        self.assertTrue(all(len(keys) == 1 for keys in by_tx.values()), "one field choice per transaction")
+        sides = {}
+        for _, row in self.rows:
+            _, meta, answer = self.parts(row)
+            key = next(iter(meta), "<empty>")
+            sides.setdefault(key, Counter())[answer["risk"]] += 1
+        self.assertEqual(set(sides), set(sd.METADATA_FIELDS) | {"<empty>"})
+        for key, c in sides.items():
+            if sum(c.values()) >= 20:
+                self.assertTrue(c["low"] > 0 and c["high"] > 0, (key, c))
+
+    def test_bundled_cases_supply_undeclared_without_twins(self):
+        for kind, r in (("undeclared_approval", BUNDLED_APPROVE), ("undeclared_authority_change", BUNDLED_SET_OWNER),
+                        ("undeclared_close", BUNDLED_CLOSE)):
+            honest = sd.derive_intent(r)
+            self.assertEqual(honest["action"], "transfer_token")
+            self.assertEqual(sd.label(honest, r, {}), ([], []))
+            m, meta = sd.mutate(kind, honest, r, random.Random(1), twins=[])
+            self.assertEqual(m["action"], "transfer_token")
+            self.assertEqual(sd.label(m, r, meta)[0], [kind])
+        twinned = [r for _, r in self.rows if r.get("twin")]
+        self.assertEqual(twinned, [], "bundled records cover every undeclared kind, so no twin is needed")
+
+    def test_twins_stay_in_their_split(self):
+        recs = [r for r in ShortcutTests.mix() if not r.get("case", "").startswith("bundled")]
+        splits, _ = sd.build(recs, "risk", seed=11)
+        twinned = [(name, r) for name, v in splits.items() for r in v if r.get("twin")]
+        self.assertTrue(twinned)
+        for name, r in twinned:
+            self.assertEqual(sd.split_of(r["twin"], 11), name)
+
+    def test_reserved_injections_appear_only_in_test(self):
+        reserved = set(sd.TEST_ONLY_INJECTIONS)
+        seen = Counter()
+        for name, row in self.rows:
+            _, meta, answer = self.parts(row)
+            if "injected_instruction" in answer["signals"]:
+                text = next(iter(meta.values()))
+                seen[name, text in reserved] += 1
+        self.assertEqual(seen[("train", True)] + seen[("valid", True)], 0)
+        self.assertEqual(seen[("test", False)], 0)
+        self.assertGreater(seen[("train", False)], 0)
 
 
 if __name__ == "__main__":

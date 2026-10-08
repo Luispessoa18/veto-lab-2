@@ -213,9 +213,17 @@ python -m src.svm_dataset --effects results/svm_effects.jsonl results/svm_effect
   vai para `stats.json`, que também separa tudo por origem (`mainnet` / `synthetic`).
 - Avaliação por origem: `test_mainnet.jsonl`, `test_synthetic.jsonl` e `test_by_source.jsonl`
   (cada linha com `source`). Os casos sintéticos são mais fáceis; reporte os dois números.
-- Sem atalhos: quando uma mutação `undeclared_*` esconde o efeito principal, a intenção vira um
-  pedido inocente plausível (a intenção honesta de uma transferência benigna de outro registro);
-  `stats.json` traz `risk_by_action` e avisa se alguma ação ficar >85% ou <15% de risco alto.
+- O que as verificações automáticas garantem (testes + `stats.json`): nenhuma ação com risco alto
+  >85% ou <15% (`risk_by_action`/`warnings`, n ≥ 20); cada campo de metadados (e "sem metadados")
+  aparece com risco baixo e alto; o ativo declarado sempre consta em `allowed_effects`; fechar uma
+  conta não conta como troca de autoridade; mutações `undeclared_*` usam os casos "bundled" do
+  `dataset-synth` (a transferência declarada acontece de verdade) e, só na falta deles, a intenção
+  de uma transferência benigna do **mesmo** split; ~30% dos textos de injeção só aparecem no teste;
+  no máximo 8 registros por pagador de taxa. Isso reduz atalhos conhecidos, não prova que não há outros.
+- Questão em aberto (decisão do time): uma intenção honesta que declara uma ação perigosa (por
+  exemplo, approve ilimitado ou transferir a autoridade da conta) é rotulada risco **baixo**, porque
+  os efeitos batem com o pedido. Se o modelo deve sinalizar ações perigosas mesmo quando declaradas
+  ainda precisa ser decidido; os rótulos atuais não fazem isso.
 
 - Saída em chat JSONL (`messages` system/user/assistant), aceita por MLX-LM e Unsloth:
   `results/svm_dataset/{train,valid,test}.jsonl` + `stats.json` (contagens por split, por sinal,
