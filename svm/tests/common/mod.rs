@@ -30,3 +30,26 @@ pub fn padded_tx(from: Address, memo_len: usize) -> Vec<u8> {
     let tx = VersionedTransaction { signatures: vec![Signature::default()], message: VersionedMessage::Legacy(msg) };
     bincode::serialize(&tx).unwrap()
 }
+
+/// A transfer that also loads `extra` read-only (the system program ignores it).
+pub fn transfer_with_readonly(from: Address, to: Address, lamports: u64, extra: Address) -> Vec<u8> {
+    let mut ix = solana_system_interface::instruction::transfer(&from, &to, lamports);
+    ix.accounts.push(solana_instruction::AccountMeta::new_readonly(extra, false));
+    let msg = Message::new_with_blockhash(&[ix], Some(&from), &Hash::new_from_array([7; 32]));
+    let tx = VersionedTransaction { signatures: vec![Signature::default()], message: VersionedMessage::Legacy(msg) };
+    bincode::serialize(&tx).unwrap()
+}
+
+/// An initialized SPL Token account (165 bytes).
+pub fn token_account(mint: Address, owner: Address, amount: u64, delegate: Option<Address>) -> solana_account::Account {
+    let mut d = vec![0u8; 165];
+    d[0..32].copy_from_slice(mint.as_ref());
+    d[32..64].copy_from_slice(owner.as_ref());
+    d[64..72].copy_from_slice(&amount.to_le_bytes());
+    if let Some(del) = delegate {
+        d[72] = 1;
+        d[76..108].copy_from_slice(del.as_ref());
+    }
+    d[108] = 1;
+    solana_account::Account { lamports: 2_039_280, data: d, owner: aval_svm::project::TOKEN_PROGRAM.parse().unwrap(), executable: false, rent_epoch: 0 }
+}

@@ -105,6 +105,20 @@ class AvalSvmTests(unittest.TestCase):
             self.pipe(aval_svm_timeout_seconds=3).simulate_solana(PAYLOAD, "r10")
         self.assertEqual(post.call_args.kwargs["timeout"], 3)
 
+    def test_divergent_worlds_turn_allow_into_review(self):
+        divergent = {"result": {**OK["result"], "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": True}}}
+        with patch("src.unified_api.requests.post", return_value=reply(divergent)):
+            out = self.pipe().simulate_solana(PAYLOAD, "r11")
+        self.assertEqual((out["decision"], out["reason"], out["engine"]), ("REVIEW", "SOLANA_SIMULATION_DIVERGENT", "aval-svm"))
+        self.assertEqual(out["aval"]["worlds"], 2)
+        same = {"result": {**OK["result"], "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": False}}}
+        with patch("src.unified_api.requests.post", return_value=reply(same)):
+            self.assertEqual(self.pipe().simulate_solana(PAYLOAD, "r12")["decision"], "ALLOW")
+        failed = {"result": {"value": {"err": {"InstructionError": [0, "x"]}, "logs": []},
+                             "aval": {**OK["result"]["aval"], "worlds": 2, "divergent": True}}}
+        with patch("src.unified_api.requests.post", return_value=reply(failed)):
+            self.assertEqual(self.pipe().simulate_solana(PAYLOAD, "r13")["decision"], "BLOCK")
+
     def test_everything_down_is_review(self):
         with patch("src.unified_api.requests.post", side_effect=requests.ConnectionError("down")):
             out = self.pipe().simulate_solana(PAYLOAD, "r4")

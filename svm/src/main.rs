@@ -213,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
                 primary: upstream.clone(),
                 secondary: c.upstream_secondary_url.as_deref().map(|u| Upstream::new(u, &c.commitment, c.upstream_timeout_ms)),
                 max_slot_gap: c.quorum_max_slot_gap,
+                refetch_attempts: c.quorum_refetch_attempts,
             };
             let engine = Engine::new(Cache::new(quorum, Duration::from_millis(c.cache_ttl_ms)).with_program_ttl(Duration::from_millis(c.program_ttl_ms)), Pool::new(c.pool_size, c.recycle_after));
             let preload: Vec<Address> = DEFAULT_PRELOAD.iter().map(|s| s.to_string()).chain(c.preload_programs.clone())

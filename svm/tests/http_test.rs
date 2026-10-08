@@ -127,6 +127,40 @@ async fn project_endpoint_returns_projection() {
     assert_eq!(out["ok"], true, "{out}");
     assert_eq!(out["projection"]["created"], json!([key(2).to_string()]));
     assert!(out["aval"]["elapsedUs"].is_u64());
+    assert!(out.get("projectionAlternate").is_none(), "{out}");
+    assert!(out["aval"].get("worlds").is_none() && out["aval"].get("divergent").is_none(), "{out}");
+}
+
+fn divergent_app() -> axum::Router {
+    let src = MemSource::new(900);
+    src.insert(key(1), Account { lamports: 10_000_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    src.insert(key(5), Account { lamports: 777, owner: solana_sdk_ids::system_program::id(), ..Account::default() });
+    // The secondary sees key(2) already funded with 5_000_000.
+    src.set_dissent(key(2), Some(Account { lamports: 5_000_000, owner: solana_sdk_ids::system_program::id(), ..Account::default() }));
+    let engine = Engine::new(Cache::new(src, Duration::from_secs(60)), Pool::new(1, 100));
+    router(Arc::new(App { engine, upstream: Upstream::new("http://127.0.0.1:9", "confirmed", 2000) }))
+}
+
+#[tokio::test]
+async fn divergent_worlds_carry_the_alternate_projection() {
+    let (_, raw) = transfer_tx(key(1), key(2), 1_000_000);
+    let out = post(divergent_app(), "/v1/project", json!({"transaction": B64.encode(&raw)})).await;
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!((&out["aval"]["worlds"], &out["aval"]["divergent"]), (&json!(2), &json!(true)), "{out}");
+    assert_eq!(out["projection"]["created"], json!([key(2).to_string()]));
+    let alt = &out["projectionAlternate"];
+    assert_eq!(alt["created"], json!([]), "{out}");
+    assert!(alt["sol"].as_array().unwrap().iter().any(|d| d["account"] == key(2).to_string() && d["pre"] == 5_000_000 && d["post"] == 6_000_000), "{out}");
+    let rpc = post(divergent_app(), "/", json!({"jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
+        "params": [B64.encode(&raw), {"encoding": "base64"}]})).await;
+    assert_eq!((&rpc["result"]["aval"]["worlds"], &rpc["result"]["aval"]["divergent"]), (&json!(2), &json!(true)), "{rpc}");
+}
+
+#[tokio::test]
+async fn get_multiple_accounts_with_dissent_is_32005() {
+    let out = post(divergent_app(), "/", gma(vec![key(2).to_string()], json!({"encoding": "base64"}))).await;
+    assert_eq!(out["error"]["code"], -32005, "{out}");
+    assert!(out["error"]["message"].as_str().unwrap().contains("disagree"), "{out}");
 }
 
 #[tokio::test]
@@ -251,6 +285,7 @@ async fn aval_meta_reports_upstreams_only_when_cross_checked() {
     let on = router(Arc::new(App { engine, upstream: Upstream::new("http://127.0.0.1:9", "confirmed", 2000) }));
     let out = post(on, "/", body.clone()).await;
     assert_eq!(out["result"]["aval"]["upstreams"], 2, "{out}");
+    assert!(out["result"]["aval"].get("worlds").is_none(), "agreeing providers: one world, {out}");
     let off = post(app("http://127.0.0.1:9").await, "/", body).await;
     assert!(off["result"]["aval"].get("upstreams").is_none(), "{off}");
 }

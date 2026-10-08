@@ -106,10 +106,30 @@ accounts (program entries still follow `program_ttl_ms`). Post-Oct-8,
 
 **Cross-check (optional).** With `upstream_secondary_url` set, each fetch goes to both
 providers and is compared. A provider more than `quorum_max_slot_gap` slots behind is
-unavailable; equal data passes; differing data at equal slots fails; differing data at
-different slots refetches the lagging side once with `minContextSlot`. Accounts are
-cross-checked at fetch time and then served from the cache within the TTL, so hot accounts
-that change every slot can make the check fail more often (fail-closed by design).
+unavailable (error); equal data passes; differing data at different slots re-reads the
+lagging side, up to `quorum_refetch_attempts` times (default 3), each with `minContextSlot`
+= the other side's latest slot. Data still differing (or differing at equal slots) is a
+disagreement: `QuorumSource::get_multiple_with_dissent` returns the primary's accounts and the
+secondary's values as *dissent*, which the cache stores with the entry (and drops with it; a
+disputed program is not pinned). Accounts are cross-checked at fetch time and then served
+from the cache within the TTL.
+
+**Two worlds (hot accounts no longer fail closed).** The engine classifies each disputed key:
+- *strict* — signers (fee payer included), any account executable in either view, ProgramData,
+  SPL Token / Token-2022 token accounts whose owner or delegate is a signer (either view), and
+  address lookup tables (they decide which accounts load). Dissent here refuses with
+  `upstreams disagree on <key>` (`-32005`), as before.
+- *tolerated* — everything else (pools, oracles, third-party state, sysvars). The transaction is
+  simulated in world P (primary accounts) and world S (primary accounts with the disputed keys
+  set to the secondary's values). If either fails, that failure is the answer; if both succeed,
+  world P's outcome is returned and world S's is kept as the alternate. `aval` carries
+  `"worlds": 2, "divergent": <bool>` (divergent = error presence or a written account's
+  post-state differs), and `/v1/project` adds `projectionAlternate`. With no dissent the output
+  is unchanged. Raw reads (`getMultipleAccounts` from the cache) still fail closed on dissent.
+
+A lying provider can only make Aval stricter, never looser — assuming at least one honest
+provider: the stricter of the two worlds is reported, and dissent on what the signer controls
+(or on code) refuses.
 
 **Preloaded at boot.** System, SPL Token, Token-2022, Associated Token, Memo,
 Compute Budget, Stake, Address Lookup Table, and a configurable list

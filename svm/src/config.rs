@@ -18,8 +18,11 @@ pub struct Config {
     pub upstream_timeout_ms: u64,
     /// Second RPC provider; when set, every account read is fetched from both and compared.
     pub upstream_secondary_url: Option<String>,
-    /// Most slots the two providers may differ by once a lagging one has been refetched.
+    /// Most slots the two providers' first reads may differ by; beyond it the lagging one is unhealthy.
     pub quorum_max_slot_gap: u64,
+    /// Re-reads of the lagging provider, on a data mismatch at different slots, before the
+    /// two views count as a disagreement.
+    pub quorum_refetch_attempts: u32,
 }
 
 impl Default for Config {
@@ -36,6 +39,7 @@ impl Default for Config {
             upstream_timeout_ms: 10_000,
             upstream_secondary_url: None,
             quorum_max_slot_gap: 4,
+            quorum_refetch_attempts: 3,
         }
     }
 }
@@ -69,7 +73,7 @@ mod tests {
         assert_eq!(c.cache_ttl_ms, 500);
         assert_eq!(c.listen, "127.0.0.1:8899");
         assert_eq!(c.program_ttl_ms, 60_000);
-        assert_eq!((c.upstream_secondary_url, c.quorum_max_slot_gap), (None, 4));
+        assert_eq!((c.upstream_secondary_url, c.quorum_max_slot_gap, c.quorum_refetch_attempts), (None, 4, 3));
     }
 
     #[test]

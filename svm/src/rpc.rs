@@ -41,6 +41,10 @@ pub fn aval_meta(r: &SimReport) -> Value {
     if r.upstreams == 2 {
         meta["upstreams"] = json!(2);
     }
+    if r.worlds == 2 {
+        meta["worlds"] = json!(2);
+        meta["divergent"] = json!(r.divergent);
+    }
     meta
 }
 
@@ -82,8 +86,7 @@ pub async fn simulate_result<S: AccountSource>(engine: &Engine<S>, params: &Valu
         if let Some(keys) = &requested {
             let missing: Vec<Address> = keys.iter().filter(|k| !o.post.contains_key(*k) && !report.pre.contains_key(*k)).cloned().collect();
             if !missing.is_empty() {
-                let got = engine.cache().get_many(&missing, fresh).await.map_err(|e| RpcError { code: -32005, message: e.to_string() })?;
-                extra = got.accounts;
+                extra = raw_read(engine, &missing, fresh).await?.accounts;
             }
         }
     }
@@ -119,6 +122,16 @@ pub async fn simulate_result<S: AccountSource>(engine: &Engine<S>, params: &Valu
     Ok(json!({"context": {"slot": report.slot}, "value": value, "aval": aval_meta(&report)}))
 }
 
+/// A plain account read handed back to the client: a provider disagreement fails closed here
+/// (there is no simulation to make stricter).
+async fn raw_read<S: AccountSource>(engine: &Engine<S>, keys: &[Address], fresh: bool) -> Result<crate::cache::Fetched, RpcError> {
+    let got = engine.cache().get_many(keys, fresh).await.map_err(|e| RpcError { code: -32005, message: e.to_string() })?;
+    if let Some(k) = keys.iter().find(|k| got.dissent.contains_key(*k)) {
+        return Err(RpcError { code: -32005, message: format!("upstream unavailable: upstreams disagree on {k}") });
+    }
+    Ok(got)
+}
+
 /// Most keys one getMultipleAccounts may ask for (Solana RPC limit).
 const MAX_MULTIPLE_ACCOUNTS: usize = 100;
 
@@ -142,7 +155,7 @@ pub async fn multiple_accounts_result<S: AccountSource>(engine: &Engine<S>, para
     }
     let keys: Vec<Address> = list.iter().map(|a| a.as_str().and_then(|s| Address::from_str(s).ok()).ok_or_else(|| invalid("bad address")))
         .collect::<Result<_, _>>()?;
-    let got = engine.cache().get_many(&keys, false).await.map_err(|e| RpcError { code: -32005, message: e.to_string() })?;
+    let got = raw_read(engine, &keys, false).await?;
     let value: Vec<Value> = keys.iter().map(|k| got.accounts.get(k).and_then(|a| a.as_ref()).map_or(Value::Null, ui_account)).collect();
     Ok(json!({"context": {"slot": got.slot}, "value": value}))
 }

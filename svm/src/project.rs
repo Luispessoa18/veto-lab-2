@@ -54,6 +54,11 @@ fn token_view(a: &Account) -> Option<TokenView> {
     })
 }
 
+/// Token owner and delegate of an initialized SPL Token / Token-2022 token account.
+pub fn token_authorities(a: &Account) -> Option<(Address, Option<Address>)> {
+    token_view(a).map(|t| (t.owner, t.delegate))
+}
+
 /// Mint layout: decimals at byte 44.
 fn decimals_of(mint: &Address, pre: &HashMap<Address, Option<Account>>) -> Option<u8> {
     let m = pre.get(mint)?.as_ref()?;

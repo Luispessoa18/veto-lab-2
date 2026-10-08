@@ -160,11 +160,24 @@ cd svm && cargo build --release && cd ..
   formas vão para o upstream.
 - Upstream: `AVAL_UPSTREAM_URL` (padrão devnet). Para mainnet use um RPC próprio (Helius etc.).
 - Verificação cruzada (opcional): com `upstream_secondary_url` (ou `AVAL_UPSTREAM_SECONDARY_URL`),
-  toda leitura de contas é feita nos dois provedores e comparada; divergência falha fechado
-  (`-32005`), e um provedor mais de `quorum_max_slot_gap` slots atrás é tratado como indisponível.
-  As contas são conferidas no momento da busca e depois servidas do cache dentro do TTL; contas
-  quentes que mudam a cada slot podem fazer a verificação falhar com mais frequência (falhar
-  fechado é intencional). A resposta traz `aval.upstreams: 2` quando ligada.
+  toda leitura de contas é feita nos dois provedores e comparada; um provedor mais de
+  `quorum_max_slot_gap` slots atrás é tratado como indisponível (`-32005`). Se os dados diferem em
+  slots diferentes, o lado atrasado é relido até `quorum_refetch_attempts` vezes (padrão 3) com
+  `minContextSlot`. As contas são conferidas no momento da busca e depois servidas do cache dentro
+  do TTL. A resposta traz `aval.upstreams: 2` quando ligada.
+- Contas quentes não falham mais fechado. Se a divergência persiste, a regra é:
+  - **estritas** (precisam bater; senão `-32005`): signatários (inclusive o pagador da taxa),
+    qualquer conta executável em uma das visões, ProgramData, contas de token SPL / Token-2022
+    cujo dono ou delegado é um signatário, e tabelas de lookup (decidem quais contas entram);
+  - **toleradas** (pools, oráculos, estado de terceiros, sysvars): a transação é simulada em dois
+    mundos — P (contas do primário) e S (as mesmas, com os valores do secundário nas contas
+    divergentes). Se um mundo falha, a resposta é a falha; se os dois passam, vale o mundo P.
+    `aval` ganha `"worlds": 2` e `"divergent"` (resultados diferentes: erro ou estado final de
+    uma conta gravada); `/v1/project` ganha `projectionAlternate` (o outro mundo). O laboratório
+    transforma `divergent: true` + ALLOW em REVIEW (`SOLANA_SIMULATION_DIVERGENT`).
+  - `getMultipleAccounts` servido do cache continua falhando fechado (`-32005`) numa divergência.
+  - Um provedor mentiroso só consegue deixar o Aval mais estrito, nunca mais frouxo — supondo que
+    ao menos um provedor seja honesto.
 - Medir contra o RPC: `aval-svm shadow --upstream <url> --count 200`.
 - Usa o `Clock` e o `EpochSchedule` do cluster, e verifica os precompiles ed25519/secp256k1.
   Transações maiores que 4096 bytes são recusadas (`-32602`).

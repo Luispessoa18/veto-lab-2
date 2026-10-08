@@ -251,9 +251,13 @@ class VetoPipeline:
             return result("BLOCK", "solana_simulation", "SOLANA_SIMULATION_FAILED", cluster=cluster, engine=engine,
                           simulation_error=value.get("err"), logs=value.get("logs", []), latency_ms=latency,
                           aval=res.get("aval"))
-        return result("ALLOW", "solana_simulation", "SOLANA_SIMULATION_SUCCEEDED",
+        aval = res.get("aval")
+        # os dois provedores discordam em contas toleradas e os dois mundos simulados diferem
+        divergent = isinstance(aval, dict) and aval.get("divergent") is True
+        return result("REVIEW" if divergent else "ALLOW", "solana_simulation",
+                      "SOLANA_SIMULATION_DIVERGENT" if divergent else "SOLANA_SIMULATION_SUCCEEDED",
                       cluster=cluster, engine=engine, units_consumed=value.get("unitsConsumed"),
-                      logs=value.get("logs", []), latency_ms=latency, aval=res.get("aval"))
+                      logs=value.get("logs", []), latency_ms=latency, aval=aval)
 
     def verify_transaction(self, payload, request_id):
         trace = []
