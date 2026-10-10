@@ -4,9 +4,9 @@ import { useConfig } from '../config/store'
 
 /* Services behind the console, pinged through the dev proxy every 5 s. */
 const SERVICES = [
-  { id: 'veto', name: 'Veto engine', path: '/veto/review', target: '127.0.0.1:5173', role: 'Normalizes, simulates and judges every action; owns the review queue.' },
-  { id: 'svm', name: 'aval-svm', path: '/svm/health', target: '127.0.0.1:8899', role: 'Local LiteSVM simulator speaking JSON-RPC simulateTransaction.' },
-  { id: 'lab', name: 'Lab API', path: '/lab/health', target: '127.0.0.1:8070', role: 'Layered benchmark API: blacklist, prompt guard, policy, LLM, simulation.' },
+  { id: 'veto', name: 'Veto engine', path: '/veto/review', target: '127.0.0.1:5173', role: 'Normalizes, simulates and judges every action; owns the review queue. Not part of this repository.' },
+  { id: 'svm', name: 'aval-svm', path: '/svm/health', target: '127.0.0.1:8899', role: 'Local LiteSVM simulator (svm/) speaking JSON-RPC simulateTransaction. Start: svm/target/release/aval-svm serve.' },
+  { id: 'lab', name: 'Lab API', path: '/lab/health', target: '127.0.0.1:8070', role: 'This repository’s API (src/unified_api.py): blacklist, Prompt Guard, AI, simulation. Its traffic is on the Lab traffic page.' },
 ] as const
 const BARS = '▁▂▃▄▅▆▇█'
 

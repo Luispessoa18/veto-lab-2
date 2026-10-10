@@ -1025,3 +1025,23 @@ select.search { font-size: 14px; }
 .insights > * { min-width: 0; }
 .insights__tabs { min-width: 0; flex: 0 1 auto; }
 @media (max-width: 760px) { .insights__tabs { flex-basis: 100%; } }
+
+/* ── lab traffic (this repository's API) ───────── */
+.labbench { margin-bottom: 16px; }
+.labtable .table__head, .labtable .table__row { grid-template-columns: 9ch minmax(0, 1.4fr) 13ch minmax(0, 1.6fr) 10ch 9ch; }
+.labrow--deny { background: linear-gradient(90deg, rgba(var(--deny-rgb), .07), transparent 55%); }
+.labrow__id { display: grid; gap: 2px; min-width: 0; }
+.labrow__id code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.labrow__id small { color: var(--dim); font-size: 11px; }
+.dbadge--err { color: var(--dim); border-style: dashed; }
+.labpath { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.labpath__step { font-size: 10.5px; padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); }
+.labpath__step.is-deny { color: var(--deny); border-color: var(--deny); }
+.labpath__step.is-flag { color: var(--flag); border-color: var(--flag); }
+.labpath__step.is-allow { color: var(--ink); }
+.labdetail { padding: 6px 16px 16px 9ch; border-bottom: 1px solid var(--l1); }
+@media (max-width: 1000px) {
+  .labtable .table__head, .labtable .table__row { grid-template-columns: 8ch minmax(0, 1fr) auto; }
+  .labtable .table__head span:nth-child(n+3):not(:nth-child(5)), .labtable .table__row > span:nth-child(n+3):not(:nth-child(5)) { display: none; }
+  .labdetail { padding-left: 16px; }
+}

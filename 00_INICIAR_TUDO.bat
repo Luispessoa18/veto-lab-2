@@ -44,6 +44,14 @@ if exist "svm\target\release\aval-svm.exe" (
 echo Iniciando API e Prompt Guard na porta 8070...
 start "VETO - API + Prompt Guard" /min "%PY%" -m src.unified_api --host 127.0.0.1 --port 8070
 
+where npm.cmd >nul 2>nul
+if not errorlevel 1 if exist "console\node_modules" (
+  echo Iniciando o console do Aval na porta 5190...
+  start "VETO - Console" /min cmd /c "cd /d console && npm run dev -- --port 5190 --strictPort"
+) else (
+  echo [AVISO] Console do Aval nao iniciado ^(instale com: cd console ^&^& npm install^).
+)
+
 echo Aguardando a API carregar os modelos...
 call :wait_api
 if errorlevel 1 (
@@ -56,6 +64,7 @@ echo Tudo pronto.
 echo Swagger: http://127.0.0.1:8070/docs
 echo Painel admin: http://127.0.0.1:8070/admin
 echo OpenAPI: http://127.0.0.1:8070/openapi.json
+if exist "console\node_modules" echo Console do Aval: http://127.0.0.1:5190
 start "" "http://127.0.0.1:8070/docs"
 start "" "http://127.0.0.1:8070/admin"
 exit /b 0
