@@ -44,9 +44,18 @@ echo "Iniciando API + Prompt Guard na porta 8070 (log: results/api.log)..."
 "$PY" -m src.unified_api --host 127.0.0.1 --port 8070 > results/api.log 2>&1 &
 pids+=($!)
 
+# Console do Aval (console/): opcional, precisa de Node e de `npm install` uma vez.
+if command -v npm >/dev/null && [ -d console/node_modules ]; then
+  echo "Iniciando o console do Aval na porta 5190 (log: results/console.log)..."
+  (cd console && npm run dev -- --port 5190 --strictPort) > results/console.log 2>&1 &
+  pids+=($!)
+else
+  echo "[AVISO] Console do Aval nao iniciado (instale com: cd console && npm install)."
+fi
+
 for _ in $(seq 1 60); do
   if curl -fs http://127.0.0.1:8070/health >/dev/null; then
-    echo; echo "Tudo pronto. Swagger: http://127.0.0.1:8070/docs  (CTRL+C para parar)"
+    echo; echo "Tudo pronto. Swagger: http://127.0.0.1:8070/docs  Console: http://127.0.0.1:5190  (CTRL+C para parar)"
     wait
     exit 0
   fi

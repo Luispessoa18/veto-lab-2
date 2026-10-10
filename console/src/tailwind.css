@@ -1,0 +1,22 @@
+/*
+ * Tailwind v4 for the imported UI components, without its preflight reset so
+ * the hand-written site and console styles keep their current look.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+/* Scan only the imported components: the hand-written console uses class
+   names like .table and .inline that Tailwind would otherwise restyle. */
+@source "./components/ui";
+@source inline("text-primary size-6");
+
+/* `dark:` follows the AVAL theme switch (data-theme on <html>), not the OS. */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* The shadcn-style tokens these components use, mapped to AVAL's. */
+@theme inline {
+  --color-primary: var(--ink);
+  --color-background: var(--bg);
+  --font-mono: var(--mono);
+  --font-sans: var(--mono);
+}

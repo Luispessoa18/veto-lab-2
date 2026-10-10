@@ -36,6 +36,17 @@ O Prompt Guard é um modelo restrito: aceite a licença em <https://huggingface.
    No Windows, `01_INSTALAR.bat` executa esses passos automaticamente.
 5. Suba tudo: `00_INICIAR_TUDO.bat` → abre o Swagger em <http://127.0.0.1:8070/docs> e o painel em <http://127.0.0.1:8070/admin>. O painel acompanha requisições, latências e o relatório detalhado do benchmark Solana. O Anvil é opcional e só é iniciado quando está instalado; ele não é necessário para o fluxo Solana.
 
+## Console do Aval (`console/`)
+
+Painel do operador: Live gate, Overview, Issues, Lab traffic (o tráfego desta API, lido de `/admin/requests`), Runs (execuções em lote inteiras de `results/runs/`, via `/admin/runs`), Actions com gráficos por período, e System com a saúde da API (8070), do aval-svm (8899) e do motor Veto (5173).
+
+```bash
+cd console && npm install    # uma vez (Node 20+)
+./iniciar_tudo.sh            # sobe tudo, inclusive o console em http://127.0.0.1:5190
+```
+
+Detalhes em [console/README.md](console/README.md).
+
 Os demais `.bat` (`02_SERVIDOR`, `03_GERAR_CASOS`, `04_RODAR_BENCHMARK`, ...) seguem descritos no [LEIA-ME.md](LEIA-ME.md).
 
 ## Linux
