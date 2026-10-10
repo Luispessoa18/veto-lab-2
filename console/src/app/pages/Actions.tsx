@@ -6,7 +6,7 @@ import { ago, short } from '../api/format'
 import { DecisionBadge, SevCounts } from '../ui/Decision'
 import Scramble from '../../components/Scramble'
 import { go } from '../router'
-import FeedChart, { type Range } from '../ui/FeedChart'
+import ActionsInsights, { useWindow } from '../ui/ActionsInsights'
 import { agentOf } from '../api/issues'
 
 const FILTERS: (Decision | 'all')[] = ['all', 'deny', 'flag', 'allow']
@@ -14,15 +14,15 @@ const FILTERS: (Decision | 'all')[] = ['all', 'deny', 'flag', 'allow']
 export default function Actions() {
   const entries = useEntries()
   const [f, setF] = useState<Decision | 'all'>('all')
-  const [range, setRange] = useState<Range>(null)
-  const inRange = range ? entries.filter((e) => e.at >= range.from && e.at <= range.to) : entries
+  const w = useWindow(entries)
+  const inRange = w.inWin
   const rows = inRange.filter((e) => f === 'all' || e.trace.decision.outcome === f)
 
   return (
     <div className="page">
       <header className="page__head page__head--row">
         <div>
-          <Scramble as="p" text="actions · newest first" className="kicker" />
+          <Scramble as="p" text="actions · by period, newest first" className="kicker" />
           <h1>Action log</h1>
         </div>
         <div className="seg" role="tablist" aria-label="Filter by decision">
@@ -36,7 +36,7 @@ export default function Actions() {
         </div>
       </header>
 
-      <FeedChart entries={entries} range={range} onRange={setRange} />
+      <ActionsInsights entries={entries} w={w} />
 
       <div className="table" role="table" aria-label="Evaluated actions">
         <div className="table__head" role="row">
@@ -65,7 +65,7 @@ export default function Actions() {
             </motion.button>
           ))}
         </AnimatePresence>
-        {!rows.length && <p className="empty">{range ? 'Nothing in that window.' : `No ${f} verdicts yet.`}</p>}
+        {!rows.length && <p className="empty">{entries.length ? 'Nothing in this period.' : `No ${f} verdicts yet.`}</p>}
       </div>
       <button type="button" className="link link--muted" onClick={() => store.clear()}>reset session log</button>
     </div>
