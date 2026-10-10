@@ -756,6 +756,10 @@ select.search { font-size: 14px; }
 
 /* ── live gate ─────────────────────────────────── */
 .live { max-width: 1400px; }
+.live__clock { display: grid; gap: 4px; margin-top: 12px; }
+.live__clock-now { font-size: 12px; letter-spacing: .08em; color: var(--dim); text-transform: uppercase; }
+.live__clock-now b { font-family: var(--display); font-size: 26px; letter-spacing: .02em; color: var(--ink); font-variant-numeric: tabular-nums; margin-right: 6px; }
+.live__clock-sub { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .live__ctl { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
 .live__src { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); }
 .live__src i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 0 rgba(var(--ok-rgb), .6); animation: live-ping 1.6s ease-out infinite; }

@@ -43,6 +43,26 @@ const STAGES = [
   { k: 'decide', label: 'Decide', sub: 'severity ladder' },
 ] as const
 
+/* Clock times in the viewer's own timezone, with its name, e.g. 14:25:07 GMT-3. */
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
+const clockFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+const zoneFmt = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+const zoneName = (t: number) => zoneFmt.formatToParts(t).find((p) => p.type === 'timeZoneName')?.value ?? TZ
+const clock = (t: number) => clockFmt.format(t)
+
+function Clock({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
+  const up = Math.floor((now - since) / 1000)
+  const hh = Math.floor(up / 3600), mm = Math.floor((up % 3600) / 60), ss = up % 60
+  return (
+    <div className="live__clock" title={TZ}>
+      <span className="live__clock-now"><b>{clock(now)}</b> {zoneName(now)}</span>
+      <span className="live__clock-sub">{TZ} · on shift since {clock(since)} · up {hh ? `${hh}h ` : ''}{mm}m {String(ss).padStart(2, '0')}s</span>
+    </div>
+  )
+}
+
 const STAGE_MS = 720
 const HOLD_MS = 1500
 
@@ -58,6 +78,7 @@ export default function Live() {
   const [log, setLog] = useState<Run[]>([])
   const [error, setError] = useState<string | null>(null)
   const busy = useRef(false)
+  const [since] = useState(() => Date.now())
 
   const job = ROTA[turn % ROTA.length]
   const upcoming = useMemo(() => [1, 2, 3, 4].map((i) => ROTA[(turn + i) % ROTA.length]), [turn])
@@ -109,6 +130,7 @@ export default function Live() {
         <div>
           <Scramble as="p" text="live gate · agents on shift" className="kicker" />
           <h1>AVAL at work.</h1>
+          <Clock since={since} />
         </div>
         <div className="live__ctl">
           <span className={`live__src ${anySnapshot ? 'is-snap' : ''}`}><i aria-hidden="true" />{anySnapshot ? 'recorded verdicts' : 'live engine'}</span>
@@ -167,7 +189,7 @@ export default function Live() {
                   <span className="gverdict__word">{DECISION_WORD[run.trace.decision.outcome]}</span>
                   <span className="gverdict__meta">
                     {run.trace.decision.steps.find((x) => x.held)?.rule ?? ''}
-                    <br />engine {run.ms} ms{run.source === 'snapshot' ? ' · recorded' : ''} · shown slowed down
+                    <br />judged {clock(run.at)} {zoneName(run.at)} · engine {run.ms} ms{run.source === 'snapshot' ? ' · recorded' : ''} · shown slowed down
                   </span>
                 </motion.div>
               ) : (
@@ -218,7 +240,7 @@ export default function Live() {
                     <DecisionBadge d={r.trace.decision.outcome} />
                     <span className="lrow__who"><b>{r.job.agent}</b>{r.job.goal}</span>
                     <span className="lrow__why">{topReason(r.trace)}</span>
-                    <span className="lrow__ms">{r.ms} ms</span>
+                    <span className="lrow__ms"><time dateTime={new Date(r.at).toISOString()}>{clock(r.at)}</time> · {r.ms} ms</span>
                   </button>
                 </motion.li>
               ))}
@@ -247,6 +269,7 @@ function StageBody({ k, r }: { k: (typeof STAGES)[number]['k']; r: Run }) {
   if (k === 'intercept')
     return (
       <div className="gstage__body">
+        <span>at <code>{clock(r.at)} {zoneName(r.at)}</code></span>
         <span>tool <code>{t.toolCall?.name ?? '—'}</code></span>
         <span>digest <code>{short(t.transaction.messageDigest, 6)}</code></span>
         <span>fee payer <code>{named(t.transaction.feePayer)}</code></span>
