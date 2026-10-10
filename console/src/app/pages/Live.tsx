@@ -8,6 +8,7 @@ import { DecisionBadge, DECISION_WORD, SevChip } from '../ui/Decision'
 import Scramble from '../../components/Scramble'
 import { useReduced } from '../../lib/useReduced'
 import { go } from '../router'
+import { Coin, CoinStack, coinInfo, coinsOf } from '../ui/Coin'
 
 /*
  * Live gate: agents keep proposing transactions and AVAL works each one in
@@ -122,6 +123,9 @@ export default function Live() {
   log.forEach((r) => by[r.trace.decision.outcome]++)
   const times = log.map((r) => r.ms).sort((a, b) => a - b)
   const p50 = times.length ? times[Math.floor(times.length / 2)] : null
+  // Assets seen this shift: how many judged transactions moved each one.
+  const assets = new Map<string, number>()
+  log.forEach((r) => coinsOf(r.trace).forEach((m) => assets.set(m, (assets.get(m) ?? 0) + 1)))
   const anySnapshot = log.some((r) => r.source === 'snapshot') || run?.source === 'snapshot'
 
   return (
@@ -151,6 +155,15 @@ export default function Live() {
         <div className="is-flag"><span>held</span><b>{by.flag}</b></div>
         <div className="is-deny"><span>denied</span><b>{by.deny}</b></div>
         <div><span>engine p50</span><b>{p50 == null ? '—' : `${p50} ms`}</b></div>
+      </section>
+
+      <section className="live__assets" aria-label="Assets this shift">
+        <span className="live__assets-h">assets this shift</span>
+        {assets.size === 0 && <span className="live__assets-none">none yet</span>}
+        {[...assets.entries()].map(([m, n]) => (
+          <span key={m} className="live__asset"><Coin mint={m} size="md" /><b>{coinInfo(m).sym}</b><small>{n} tx</small></span>
+        ))}
+        <span className="live__assets-net">network <b>Solana mainnet</b></span>
       </section>
 
       <div className="live__grid">
@@ -186,7 +199,7 @@ export default function Live() {
                   exit={{ opacity: 0 }}
                   transition={{ type: 'spring', stiffness: 480, damping: 24 }}
                 >
-                  <span className="gverdict__word">{DECISION_WORD[run.trace.decision.outcome]}</span>
+                  <span className="gverdict__word">{DECISION_WORD[run.trace.decision.outcome]}<CoinStack mints={coinsOf(run.trace)} /></span>
                   <span className="gverdict__meta">
                     {run.trace.decision.steps.find((x) => x.held)?.rule ?? ''}
                     <br />judged {clock(run.at)} {zoneName(run.at)} · engine {run.ms} ms{run.source === 'snapshot' ? ' · recorded' : ''} · shown slowed down
@@ -238,7 +251,8 @@ export default function Live() {
                 >
                   <button type="button" onClick={() => go(`actions/${r.id}`)} title="Open the full trace">
                     <DecisionBadge d={r.trace.decision.outcome} />
-                    <span className="lrow__who"><b>{r.job.agent}</b>{r.job.goal}</span>
+                    <span className="lrow__coins">{coinsOf(r.trace).length ? <CoinStack mints={coinsOf(r.trace)} /> : <span className="lrow__nocoin" title="moves no tokens">·</span>}</span>
+                    <span className="lrow__who" title={r.job.goal}><b>{r.job.agent}</b></span>
                     <span className="lrow__why">{topReason(r.trace)}</span>
                     <span className="lrow__ms"><time dateTime={new Date(r.at).toISOString()}>{clock(r.at)}</time> · {r.ms} ms</span>
                   </button>
@@ -288,7 +302,7 @@ function StageBody({ k, r }: { k: (typeof STAGES)[number]['k']; r: Run }) {
     return (
       <ul className="gstage__list">
         {t.effects.filter((e) => e.type !== 'PROGRAM_INVOKE').map((e, i) => (
-          <li key={i}><span className="g">{EFFECT_GLYPH[e.type]}</span>{e.type.toLowerCase().replace(/_/g, ' ')} <code>{amount(e) ?? short(e.account)}</code>{e.counterparty && <> → <code>{short(e.counterparty)}</code></>}</li>
+          <li key={i}><span className="g">{EFFECT_GLYPH[e.type]}</span>{e.type.toLowerCase().replace(/_/g, ' ')} {e.mint && <Coin mint={e.mint} />}<code>{amount(e) ?? short(e.account)}</code>{e.counterparty && <> → <code>{short(e.counterparty)}</code></>}</li>
         ))}
         {t.effects.every((e) => e.type === 'PROGRAM_INVOKE') && <li className="dim">no balance or authority changes</li>}
       </ul>

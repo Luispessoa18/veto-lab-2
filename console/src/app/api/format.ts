@@ -11,8 +11,17 @@ const PROGRAMS: Record<string, string> = {
   ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL: 'Associated Token',
   ComputeBudget111111111111111111111111111111: 'Compute Budget',
   So11111111111111111111111111111111111111112: 'wSOL',
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC',
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT',
 }
 export const named = (a: string | null | undefined) => (a && PROGRAMS[a]) || short(a)
+
+/* Decimals of well-known mints, so token amounts read in whole units. */
+const DECIMALS: Record<string, number> = {
+  So11111111111111111111111111111111111111112: 9, // wSOL
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 6, // USDC
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 6, // USDT
+}
 
 export function lamports(v: string | null | undefined) {
   if (v == null) return '—'
@@ -25,6 +34,8 @@ export function amount(e: Effect) {
   if (e.amount == null) return null
   if (e.mint === 'SOL') return lamports(e.amount)
   if (e.amount === '18446744073709551615') return 'u64::MAX (unlimited)'
+  const dec = e.mint ? DECIMALS[e.mint] : undefined
+  if (dec != null) return `${(Number(e.amount) / 10 ** dec).toLocaleString('en-US', { maximumFractionDigits: dec })} ${named(e.mint)}`
   return `${Number(e.amount).toLocaleString('en-US')} units ${named(e.mint)}`
 }
 

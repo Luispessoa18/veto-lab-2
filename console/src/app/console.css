@@ -823,13 +823,13 @@ select.search { font-size: 14px; }
 .gverdict--allow { color: var(--ok); }
 
 .live__log { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 640px; overflow: auto; }
-.lrow button { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 3px 10px; align-items: center; text-align: left; padding: 9px 10px; font: inherit; font-size: 12px; color: var(--ink); background: none; border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
+.lrow button { width: 100%; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; row-gap: 5px; grid-template-rows: auto auto; gap: 3px 10px; align-items: center; text-align: left; padding: 9px 10px; font: inherit; font-size: 12px; color: var(--ink); background: none; border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
 .lrow button:hover { border-color: var(--ink); }
 .lrow--deny button { background: linear-gradient(90deg, rgba(var(--deny-rgb), .1), transparent 70%); }
-.lrow__who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+.lrow__who { grid-column: 3 / 5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
 .lrow__who b { color: var(--ink); font-weight: 500; margin-right: 8px; }
-.lrow__why { grid-column: 2; font-size: 11px; color: var(--dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lrow__ms { grid-row: 1; grid-column: 3; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.lrow__why { grid-column: 1 / 4; grid-row: 2; font-size: 11px; color: var(--dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow__ms { grid-row: 2; grid-column: 4; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
 
 @media (max-width: 1100px) {
   .live__grid { grid-template-columns: 1fr; }
@@ -927,3 +927,32 @@ select.search { font-size: 14px; }
 .wire small { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
 .wire__cap { margin: 14px 0 0; text-align: center; font-size: 11.5px; color: var(--dim); }
 .register__demo .wire { width: 100%; max-width: 360px; }
+
+/* ── coins ─────────────────────────────────────── */
+.coin { position: relative; display: inline-grid; place-items: center; flex: none; border-radius: 50%; background: var(--ink); color: var(--bg); vertical-align: -0.3em; }
+.coin svg { width: 58%; height: 58%; }
+.coin--sm { width: 18px; height: 18px; }
+.coin--md { width: 26px; height: 26px; }
+.coin__txt { font-family: var(--display); font-weight: 700; font-size: 11px; line-height: 1; }
+.coin--md .coin__txt { font-size: 14px; }
+/* Wrapped SOL: the same mark inside a ring, so SOL and wSOL tell apart. */
+.coin.is-wrapped { background: var(--bg); color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); }
+.coinstack { display: inline-flex; margin: 0 8px 0 0; vertical-align: middle; }
+.coinstack .coin + .coin { margin-left: -6px; box-shadow: 0 0 0 2px var(--panel); }
+.coinstack .coin.is-wrapped + .coin, .coinstack .coin + .coin.is-wrapped { box-shadow: inset 0 0 0 1.5px var(--ink), 0 0 0 2px var(--panel); }
+.gstage__list .coin { margin: 0 6px 0 4px; }
+.gverdict__word { display: inline-flex; align-items: center; gap: 14px; }
+.gverdict__word .coinstack { margin: 0; }
+.gverdict__word .coin { width: 26px; height: 26px; }
+
+.live__assets { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; padding: 12px 16px; margin: -4px 0 16px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); font-size: 12px; }
+.live__assets-h { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+.live__assets-none { color: var(--dim); }
+.live__asset { display: inline-flex; align-items: center; gap: 8px; }
+.live__asset b { font-family: var(--display); font-size: 15px; }
+.live__asset small { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.live__assets-net { margin-left: auto; color: var(--dim); font-size: 11px; }
+.live__assets-net b { color: var(--ink); font-weight: 500; }
+.lrow__coins { display: inline-flex; align-items: center; }
+.lrow__coins .coinstack { margin: 0; }
+.lrow__nocoin { width: 18px; text-align: center; color: var(--dim); }
