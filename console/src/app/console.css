@@ -956,3 +956,23 @@ select.search { font-size: 14px; }
 .lrow__coins { display: inline-flex; align-items: center; }
 .lrow__coins .coinstack { margin: 0; }
 .lrow__nocoin { width: 18px; text-align: center; color: var(--dim); }
+
+/* ── chain under investigation ─────────────────── */
+.chains { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 22px; }
+.chains__label { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+.chains__seg { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+.chains__item { display: inline-flex; align-items: center; gap: 4px; }
+.chains__sep { padding: 0 6px 0 10px; margin-left: 4px; border-left: 1px solid var(--line); font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+.chain { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px 5px 6px; border: 0; border-radius: 999px; background: none; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer; }
+.chain__mark { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--l1); color: var(--dim); }
+.chain__mark svg { width: 11px; height: 11px; }
+.chain__txt { font-family: var(--display); font-weight: 700; font-size: 11px; }
+.chain.is-on { background: var(--ink); color: var(--bg); }
+.chain.is-on .chain__mark { background: var(--bg); color: var(--ink); }
+.chain__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 0 rgba(var(--ok-rgb), .6); animation: live-ping 1.6s ease-out infinite; }
+.chain.is-locked { opacity: .55; cursor: not-allowed; }
+.chain.is-locked:hover { opacity: .8; }
+.chain__lock { width: 11px; height: 11px; }
+.chains__note { font-size: 11px; color: var(--dim); min-height: 1em; }
+@media (prefers-reduced-motion: reduce) { .chain__dot { animation: none; } }
+@media (max-width: 560px) { .chains__seg { border-radius: 14px; } .chains__sep { border-left: 0; margin-left: 0; padding-left: 6px; } }

@@ -9,6 +9,7 @@ import Scramble from '../../components/Scramble'
 import { useReduced } from '../../lib/useReduced'
 import { go } from '../router'
 import { Coin, CoinStack, coinInfo, coinsOf } from '../ui/Coin'
+import ChainSwitch from '../ui/ChainSwitch'
 
 /*
  * Live gate: agents keep proposing transactions and AVAL works each one in
@@ -130,6 +131,7 @@ export default function Live() {
 
   return (
     <div className="page live">
+      <ChainSwitch />
       <header className="page__head page__head--row">
         <div>
           <Scramble as="p" text="live gate · agents on shift" className="kicker" />
