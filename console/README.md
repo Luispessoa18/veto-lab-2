@@ -9,13 +9,14 @@ Painel do operador do Aval: mostra o Aval julgando as transações dos agentes e
 | **Live gate** (inicial) | Agentes enviam transações; cada uma passa pelas seis etapas do Aval (interceptar, simular, ler efeitos, origem dos endereços, checagens, decisão) e recebe ALLOW / FLAG / DENY. Cada veredito é uma chamada real ao motor; as etapas são reexibidas em câmera lenta e o tempo real do motor aparece no carimbo. |
 | **Overview** | Totais da sessão e as intervenções do gate (negados e retidos). |
 | **Lab traffic** | Requisições julgadas pela API deste repositório (`src/unified_api.py`, porta 8070), lidas do log de auditoria (`GET /admin/requests`) a cada 2 s: decisão, camada que parou, caminho pelas camadas (blacklist → Prompt Guard → IA → simulação) e latência. Clique numa linha para ver o motivo de cada camada. Se o benchmark Solana já rodou (`09_SIMULAR_ATAQUES_SOLANA`), o resumo de `GET /admin/report` aparece no topo. |
+| **Runs** | Execuções em lote inteiras (ex.: 20 mil casos), lidas de `results/runs/<run_id>.jsonl` e do benchmark Solana (`results/solana_attack_simulation.jsonl`) via `GET /admin/runs` e `GET /admin/runs/<id>`. Pontua cada caso contra o veredito esperado: acurácia, ataques bloqueados / retidos / que passaram, bloqueios falsos, latência p50/p95/p99. Cinco visões: linha do tempo (arraste para recortar um trecho), latência, tipos de ataque, camada que parou e esperado × obtido; clicar num tipo, camada ou célula filtra a lista de casos. Um arquivo que ainda está crescendo é relido a cada 10 s. |
 | **Issues** | Vereditos repetidos agrupados por regra + agente (como o Sentry agrupa erros): contagem, tendência, primeira/última vez, dono, resolver/ignorar. Um issue resolvido que volta a acontecer aparece como "came back". |
 | **Actions** | Log de todos os vereditos com visão detalhada por período (15 min, 1 h, sessão): volume, latência do motor, mix de decisões, regras e agentes; arraste sobre um gráfico para filtrar o log por janela de tempo. Cada ação abre o trace completo, com a **linha do tempo** do que aconteceu (o que o agente leu → propôs → simulação → origem → checagens → onde foi parado). |
 | **Monitoring, Review, Scenario Lab, Agents, Policy, Manifests, Lists, Deploy, System** | Gráficos, fila de revisão, laboratório de cenários e configuração. |
 
 ## Rodar
 
-O Live gate, Issues e Actions usam o **servidor de demonstração do Veto** (porta 5173), que não faz parte deste repositório. **Lab traffic** e **System** funcionam só com este repositório: a API (`./iniciar_tudo.sh` ou `00_INICIAR_TUDO.bat`, que também sobem o console) e o aval-svm.
+O Live gate, Issues e Actions usam o **servidor de demonstração do Veto** (porta 5173), que não faz parte deste repositório. **Lab traffic**, **Runs** e **System** funcionam só com este repositório: a API (`./iniciar_tudo.sh` ou `00_INICIAR_TUDO.bat`, que também sobem o console) e o aval-svm.
 
 ```bash
 cd console

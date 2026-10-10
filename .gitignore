@@ -19,6 +19,7 @@ external/
 __pycache__/
 *.pyc
 results/tmp*/
+results/runs/
 
 # Rust (aval-svm)
 svm/target/

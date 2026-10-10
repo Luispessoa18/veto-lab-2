@@ -38,7 +38,7 @@ O Prompt Guard é um modelo restrito: aceite a licença em <https://huggingface.
 
 ## Console do Aval (`console/`)
 
-Painel do operador: Live gate, Overview, Issues, Lab traffic (o tráfego desta API, lido de `/admin/requests`), Actions com gráficos por período, e System com a saúde da API (8070), do aval-svm (8899) e do motor Veto (5173).
+Painel do operador: Live gate, Overview, Issues, Lab traffic (o tráfego desta API, lido de `/admin/requests`), Runs (execuções em lote inteiras de `results/runs/`, via `/admin/runs`), Actions com gráficos por período, e System com a saúde da API (8070), do aval-svm (8899) e do motor Veto (5173).
 
 ```bash
 cd console && npm install    # uma vez (Node 20+)

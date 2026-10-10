@@ -6,6 +6,7 @@ import Overview from './pages/Overview'
 import Live from './pages/Live'
 import Issues from './pages/Issues'
 import LabTraffic from './pages/LabTraffic'
+import Runs from './pages/Runs'
 import Evaluate from './pages/Evaluate'
 import Actions from './pages/Actions'
 import TraceView from './pages/TraceView'
@@ -45,6 +46,7 @@ const NAV = [
     { k: 'overview', label: 'Overview', g: '◇' },
     { k: 'issues', label: 'Issues', g: '⚑' },
     { k: 'lab', label: 'Lab traffic', g: '⌗' },
+    { k: 'runs', label: 'Runs', g: '▦' },
     { k: 'monitoring', label: 'Monitoring', g: '∿' },
     { k: 'actions', label: 'Actions', g: '≡' },
     { k: 'review', label: 'Review', g: '◎' },
@@ -77,6 +79,7 @@ export default function App() {
   if (page === 'live') view = <Live />
   else if (page === 'issues') view = <Issues id={arg} />
   else if (page === 'lab') view = <LabTraffic />
+  else if (page === 'runs') view = <Runs runId={arg ? decodeURIComponent(arg) : undefined} />
   else if (page === 'evaluate') view = <Evaluate preset={arg} />
   else if (page === 'actions' && arg) view = <TraceView id={arg} />
   else if (page === 'actions') view = <Actions />

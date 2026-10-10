@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 
 from .eval import llm_call, untrusted_texts
+from .run_results import list_runs, load_run
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -469,6 +470,13 @@ class Handler(BaseHTTPRequestHandler):
             if report is None:
                 return self.reply(404, {"error": "relatório Solana ainda não foi gerado"})
             return self.reply(200, report)
+        if route == "/admin/runs":
+            return self.reply(200, list_runs(ROOT))
+        if route.startswith("/admin/runs/"):
+            run = load_run(ROOT, route[len("/admin/runs/"):])
+            if run is None:
+                return self.reply(404, {"error": "execução não encontrada"})
+            return self.reply(200, run)
         if route == "/docs":
             data = SWAGGER_HTML.encode("utf-8")
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")

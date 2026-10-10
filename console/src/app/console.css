@@ -1045,3 +1045,56 @@ select.search { font-size: 14px; }
   .labtable .table__head span:nth-child(n+3):not(:nth-child(5)), .labtable .table__row > span:nth-child(n+3):not(:nth-child(5)) { display: none; }
   .labdetail { padding-left: 16px; }
 }
+
+/* ── Runs: batch results ───────────────────────────────────── */
+.runs__pick { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.runs__pick a { display: grid; gap: 2px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--dim); text-decoration: none; min-width: 0; max-width: 100%; }
+.runs__pick a b { color: var(--ink); font-weight: 500; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runs__pick a small { font-size: 10.5px; }
+.runs__pick a.is-on { border-color: var(--ink); }
+.runs__pick a:hover { background: var(--s2); }
+.runs__kpis > div small { font-size: 10.5px; color: var(--dim); }
+.runs__lat { font-size: clamp(15px, 1.25vw, 20px) !important; white-space: nowrap; }
+.runs__lat i { font-style: normal; color: var(--mute); }
+.runs__plot { height: 120px; }
+.feedchart i.is-err { background: var(--mute); }
+.runs .insights__period { flex-wrap: wrap; }
+.runs__types li, .runs .hbars li { grid-template-columns: minmax(0, 17rem) minmax(0, 1fr) 7ch; }
+.runs__rowbtn { display: grid; gap: 1px; min-width: 0; background: none; border: 0; padding: 2px 0; font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
+.runs__rowbtn code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runs__rowbtn small { font-size: 10.5px; color: var(--dim); }
+.runs__rowbtn:hover code, .runs__rowbtn.is-on code { text-decoration: underline; text-underline-offset: 3px; }
+.runs__acc.is-low { color: var(--deny); }
+.runs__matrix { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+.runs__matrix th { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); font-weight: 500; text-align: left; padding: 8px 10px; }
+.runs__matrix td { border: 1px solid var(--line); padding: 0; }
+.runs__matrix td button { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 12px 14px; background: none; border: 0; font: inherit; color: var(--ink); cursor: pointer; }
+.runs__matrix td button:disabled { color: var(--mute); cursor: default; }
+.runs__matrix td b { font-family: var(--display); font-size: 20px; font-weight: 500; }
+.runs__matrix td small { color: var(--dim); }
+.runs__matrix td.is-right { background: var(--s2); }
+.runs__matrix td.is-wrong b { color: var(--deny); }
+.runs__matrix td button.is-on { outline: 2px solid var(--ink); outline-offset: -2px; }
+.runs__listhead { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; margin: 8px 0 10px; }
+.runs__listhead h2 { margin: 0; font-size: 14px; }
+.runs__chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; }
+.runs__chip { font: inherit; color: var(--ink); background: var(--s2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.runstable .table__head, .runstable .table__row { grid-template-columns: 9ch minmax(0, 1.2fr) minmax(0, 1.2fr) 10ch minmax(0, 1fr) 9ch 9ch; cursor: default; }
+.runrow.is-wrong { background: linear-gradient(90deg, rgba(var(--deny-rgb), .07), transparent 55%); }
+.runrow__miss { color: var(--deny); }
+.runs__pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0 24px; font-size: 12px; }
+.runs__pager button:disabled { opacity: .35; cursor: default; }
+@media (max-width: 1000px) {
+  .runs__kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .runs__kpis > div + div { border-left: 0; }
+  .runs__kpis > div { border-top: 1px solid var(--line); }
+  .runstable .table__head, .runstable .table__row { grid-template-columns: 8ch minmax(0, 1fr) 9ch; }
+  .runstable .table__head span:nth-child(n+3):not(:nth-child(4)), .runstable .table__row > span:nth-child(n+3):not(:nth-child(4)) { display: none; }
+  .runs__types li, .runs .hbars li { grid-template-columns: minmax(0, 1fr) 7ch; }
+}
+.runs .insights > * { min-width: 0; }
+.runs .insights__tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.runs .insights__tabs button { flex: none; white-space: nowrap; }
+.runs__matrixwrap { overflow-x: auto; }
+.runs__matrix { min-width: 30rem; }
+.runs .feedchart__legend { flex-wrap: wrap; justify-content: center; min-width: 0; text-align: center; }
