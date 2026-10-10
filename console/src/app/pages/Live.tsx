@@ -3,8 +3,8 @@ import { AnimatePresence, motion } from 'motion/react'
 import { evaluate, type Source } from '../api/api'
 import { store } from '../api/store'
 import type { Decision, Entry, EvalRequest, Trace } from '../api/types'
-import { amount, EFFECT_GLYPH, named, short } from '../api/format'
-import { DecisionBadge, DECISION_WORD, SevChip } from '../ui/Decision'
+import { amount, short } from '../api/format'
+import { DecisionBadge } from '../ui/Decision'
 import Scramble from '../../components/Scramble'
 import { useReduced } from '../../lib/useReduced'
 import { go } from '../router'
@@ -196,16 +196,14 @@ export default function Live() {
                 <motion.div
                   key={run.id}
                   className={`gverdict gverdict--${run.trace.decision.outcome}`}
-                  initial={reduced ? false : { scale: 1.25, opacity: 0, rotate: -3 }}
-                  animate={{ scale: 1, opacity: 1, rotate: -1.5 }}
+                  initial={reduced ? false : { opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
-                  transition={{ type: 'spring', stiffness: 480, damping: 24 }}
+                  transition={{ duration: 0.25 }}
                 >
-                  <span className="gverdict__word">{DECISION_WORD[run.trace.decision.outcome]}<CoinStack mints={coinsOf(run.trace)} /></span>
-                  <span className="gverdict__meta">
-                    {run.trace.decision.steps.find((x) => x.held)?.rule ?? ''}
-                    <br />judged {clock(run.at)} {zoneName(run.at)} · engine {run.ms} ms{run.source === 'snapshot' ? ' · recorded' : ''} · shown slowed down
-                  </span>
+                  <DecisionBadge d={run.trace.decision.outcome} />
+                  <span className="gverdict__rule">{run.trace.decision.steps.find((x) => x.held)?.rule ?? ''}</span>
+                  <span className="gverdict__meta">{clock(run.at)} · {run.ms} ms{run.source === 'snapshot' ? ' · recorded' : ''}</span>
                 </motion.div>
               ) : (
                 <motion.div key={`w-${turn}`} className="gbar__work" initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -223,12 +221,8 @@ export default function Live() {
                 const state = stage > i ? 'done' : stage === i ? 'on' : 'todo'
                 return (
                   <li key={s.k} className={`gstage is-${state}`}>
-                    <div className="gstage__head">
-                      <span className="gstage__n">{String(i + 1).padStart(2, '0')}</span>
-                      <b>{s.label}</b>
-                      <small>{s.sub}</small>
-                      <span className="gstage__st" aria-hidden="true">{state === 'done' ? '✓' : state === 'on' ? <Spin /> : '·'}</span>
-                    </div>
+                    <span className="gstage__st" aria-hidden="true">{state === 'done' ? '✓' : state === 'on' ? <Spin /> : ''}</span>
+                    <b className="gstage__label" title={s.sub}>{s.label}</b>
                     {state !== 'todo' && <StageBody k={s.k} r={run} />}
                   </li>
                 )
@@ -282,54 +276,36 @@ function Spin() {
 
 function StageBody({ k, r }: { k: (typeof STAGES)[number]['k']; r: Run }) {
   const t = r.trace
-  if (k === 'intercept')
+  const line = (body: React.ReactNode) => <span className="gstage__body">{body}</span>
+  if (k === 'intercept') return line(<><code>{t.toolCall?.name ?? '—'}</code> · {r.job.note}</>)
+  if (k === 'simulate') return line(<>{t.transaction.simulation} · slot {t.transaction.slot ?? '—'}</>)
+  if (k === 'effects') {
+    const moves = t.effects.filter((e) => e.type !== 'PROGRAM_INVOKE' && e.type !== 'ACCOUNT_CREATE' && e.type !== 'ACCOUNT_CLOSE' && e.amount)
+    if (!moves.length) return line('no balance changes')
     return (
-      <div className="gstage__body">
-        <span>at <code>{clock(r.at)} {zoneName(r.at)}</code></span>
-        <span>tool <code>{t.toolCall?.name ?? '—'}</code></span>
-        <span>digest <code>{short(t.transaction.messageDigest, 6)}</code></span>
-        <span>fee payer <code>{named(t.transaction.feePayer)}</code></span>
-        <span>context <code>{r.job.note}</code></span>
-      </div>
-    )
-  if (k === 'simulate')
-    return (
-      <div className="gstage__body">
-        <span>slot <code>{t.transaction.slot ?? '—'}</code></span>
-        <span>simulation <code className={`sim--${t.transaction.simulation}`}>{t.transaction.simulation}</code></span>
-        <span>accounts <code>{t.coverage.observed}/{t.coverage.referenced} observed</code></span>
-      </div>
-    )
-  if (k === 'effects')
-    return (
-      <ul className="gstage__list">
-        {t.effects.filter((e) => e.type !== 'PROGRAM_INVOKE').map((e, i) => (
-          <li key={i}><span className="g">{EFFECT_GLYPH[e.type]}</span>{e.type.toLowerCase().replace(/_/g, ' ')} {e.mint && <Coin mint={e.mint} />}<code>{amount(e) ?? short(e.account)}</code>{e.counterparty && <> → <code>{short(e.counterparty)}</code></>}</li>
+      <span className="gstage__body gstage__moves">
+        {moves.map((e, i) => (
+          <span key={i}>{e.mint && <Coin mint={e.mint} />}{e.type === 'BALANCE_INCREASE' ? '+' : e.type === 'BALANCE_DECREASE' ? '−' : ''}{amount(e)}{e.counterparty && <> → {short(e.counterparty)}</>}</span>
         ))}
-        {t.effects.every((e) => e.type === 'PROGRAM_INVOKE') && <li className="dim">no balance or authority changes</li>}
-      </ul>
+      </span>
     )
-  if (k === 'origin')
-    return (
-      <ul className="gstage__list">
-        {t.counterparties.length === 0 && <li className="dim">no outside address receives anything</li>}
-        {t.counterparties.map((c) => (
-          <li key={c.address}><code>{short(c.address)}</code> came from <b className={c.severity ? `sev--${c.severity}` : ''}>{c.origin.replace(/_/g, ' ')}</b></li>
-        ))}
-      </ul>
-    )
-  if (k === 'checks')
-    return (
-      <ul className="gstage__list">
-        {t.findings.length === 0 && <li className="dim">all checks clean</li>}
-        {t.findings.map((f, i) => <li key={i}><SevChip s={f.severity} /> <code>{f.rule}</code></li>)}
-      </ul>
-    )
-  return (
-    <ul className="gstage__list ladder">
-      {t.decision.steps.map((s) => (
-        <li key={s.rule} className={s.held ? 'is-held' : ''}>{s.held ? '▶' : ' '} {s.rule} <small>{s.detail}</small></li>
-      ))}
-    </ul>
-  )
+  }
+  if (k === 'origin') {
+    const c = [...t.counterparties].sort((a, b) => (b.severity ? 1 : 0) - (a.severity ? 1 : 0))[0]
+    if (!c) return line('no outside address')
+    return line(<>{short(c.address)} · <span className={c.severity === 'critical' || c.severity === 'high' ? 'is-bad' : ''}>{c.origin.replace(/_/g, ' ')}</span></>)
+  }
+  if (k === 'checks') {
+    const top = topFinding(t)
+    if (!top) return line('clean')
+    const more = t.findings.filter((f) => f.severity !== 'low').length - 1
+    return line(<><span className={`is-${top.severity}`}>{top.rule}</span>{more > 0 && <span className="dim"> +{more}</span>}</>)
+  }
+  return line(t.decision.steps.find((x) => x.held)?.rule ?? '—')
+}
+
+function topFinding(t: Trace) {
+  const order = { critical: 0, high: 1, medium: 2, low: 3 }
+  const f = [...t.findings].sort((a, b) => order[a.severity] - order[b.severity])[0]
+  return f && f.severity !== 'low' ? f : null
 }
