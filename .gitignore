@@ -33,3 +33,8 @@ registry/.anchor/
 registry/.localnet/
 registry/node_modules/
 *-keypair.json
+
+# AVAL console (console/)
+console/node_modules/
+console/dist/
+console/*.tsbuildinfo
